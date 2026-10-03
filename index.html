@@ -1093,14 +1093,15 @@ const shadeOf = (hex, k) => '#' + new THREE.Color(hex).multiplyScalar(k).getHexS
 const rbox = (w, h, d, r = 0.05, seg = 1) => new RoundedBoxGeometry(w, h, d, seg, Math.min(r, w / 2.01, h / 2.01, d / 2.01));
 
 // Corrugated sheet in the XY plane facing +Z: x in [-len/2, len/2], y in [0, h], ridges at z = 0, valleys at z = -depth.
-// Slope normals are softened toward +Z so distant walls don't shimmer with hard light/dark stripes.
-function corrugated(len, h, depth, pitch) {
+// Slope normals are tilted only `soft` of the way toward the real slope (0 = flat shaded): the ridges are
+// under a pixel wide at play distances, so hard light/dark slope normals alias into moire bands.
+function corrugated(len, h, depth, pitch, soft = 0.1) {
   const n = Math.max(1, Math.round(len / pitch)), p = len / n, prof = [];
   for (let i = 0; i < n; i++) { const x = -len / 2 + i * p; prof.push([x, 0], [x + 0.3 * p, 0], [x + 0.42 * p, -depth], [x + 0.88 * p, -depth]); }
   prof.push([len / 2, 0]);
   const pos = [], nor = [], uv = [], idx = [];
   for (let i = 0; i < prof.length - 1; i++) {
-    const [ax, az] = prof[i], [bx, bz] = prof[i + 1], sx = -(bz - az) * 0.55, sz = bx - ax, L = Math.hypot(sx, sz), nx = sx / L, nz = sz / L, b = pos.length / 3;
+    const [ax, az] = prof[i], [bx, bz] = prof[i + 1], sx = -(bz - az) * soft, sz = bx - ax, L = Math.hypot(sx, sz), nx = sx / L, nz = sz / L, b = pos.length / 3;
     pos.push(ax, 0, az, bx, 0, bz, bx, h, bz, ax, h, az);
     for (let k = 0; k < 4; k++) nor.push(nx, 0, nz);
     const u0 = ax / len + 0.5, u1 = bx / len + 0.5; uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
@@ -1179,12 +1180,12 @@ function containerGeo(L, W, H, color) {
   // corrugated side walls and the closed end
   for (const s of [-1, 1]) P.push(part(corrugated(L - 2 * post, wallH, 0.11, 0.66), color, [0, rail - 0.02, s * (W / 2 - 0.05)], [0, s > 0 ? 0 : Math.PI, 0], grime));
   P.push(part(corrugated(W - 2 * post, wallH, 0.1, 0.66), color, [-(L / 2 - 0.05), rail - 0.02, 0], [0, -Math.PI / 2, 0], grime));
-  // roof (transverse corrugation), slightly below the top rails
-  P.push(part(corrugated(L - 0.2, W - 0.2, 0.05, 0.75), shadeOf(color, 0.92), [0, H - 0.04, (W - 0.2) / 2], [-Math.PI / 2, 0, 0]));
+  // roof (transverse corrugation, flat shaded: seen at grazing angles it is all moire), slightly below the top rails
+  P.push(part(corrugated(L - 0.2, W - 0.2, 0.05, 0.75, 0), shadeOf(color, 0.92), [0, H - 0.04, (W - 0.2) / 2], [-Math.PI / 2, 0, 0]));
   // door end: two leaves, seam, four locking bars with cams and handles, hinges
   const leaf = (W - 2 * post) / 2 - 0.02, dx = L / 2 - 0.17;
   for (const s of [-1, 1]) {
-    P.push(part(corrugated(leaf, wallH, 0.05, 0.42), color, [dx, rail - 0.02, s * (leaf / 2 + 0.02)], [0, Math.PI / 2, 0], grime));
+    P.push(part(corrugated(leaf, wallH, 0.05, 0.42, 0), color, [dx, rail - 0.02, s * (leaf / 2 + 0.02)], [0, Math.PI / 2, 0], grime));
     for (const f of [0.22, 0.72]) {
       const z = s * (0.02 + leaf * f);
       P.push(part(new THREE.CylinderGeometry(0.045, 0.045, wallH - 0.06, 6), steel, [L / 2 - 0.1, H / 2, z]));
@@ -1261,7 +1262,8 @@ function tyreStackGeo(R, H, color, seed) {
 }
 
 // Shared materials: vertex coloured, so one material (and one draw call) covers each obstacle kind.
-const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.35 });
+// Container paint is fairly rough and barely metallic: a sharp highlight on sub-pixel ridges reads as moire.
+const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.1 });
 const crateMat = new THREE.MeshStandardMaterial({ map: woodTex, vertexColors: true, roughness: 0.85, metalness: 0 });
 const tyreMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.15 });
 (function buildObstacles() {
@@ -1320,12 +1322,12 @@ const boxes = BOX_SPOTS.map(([x, z], i) => {
 }
 
 /* ---------- karts (MODELS) ---------- */
-// Each kart view starts as a procedural kart (always available), then swaps in a Kenney Car Kit kart
-// (CC0, assets/car-kit) once that model has loaded. Geometry is shared between karts; each kart owns
+// Each kart view uses a Kenney Car Kit kart (CC0, assets/car-kit); until that model has loaded it shows a
+// procedural kart (always available) and swaps with a short animation when the model arrives. Geometry is shared between karts; each kart owns
 // only its body material (player colour, star glow) and its name tag.
 const KART_DIR = 'assets/car-kit/', KART_VARIANTS = ['oobi', 'oodi', 'ooli', 'oopi', 'oozi'];
 // Kenney karts are ~1 x 1.4 units: scale to the old footprint (about 2.5 wide; stretched a little in length)
-const KART_SCALE = new THREE.Vector3(2.6, 2.6, 2.95), KART_Z = -0.25;
+const KART_SCALE = new THREE.Vector3(2.6, 2.6, 2.95), KART_Z = -0.25, DRIVER_SCALE = 0.72;
 // colormap.png is a 16 x 4 grid of gradient swatches. The kart chassis uses swatch (11, 2) and the helmet
 // (13, 2); their neighbours (10, 2) and (12, 2) are repainted too so mipmaps don't bleed in other colours.
 const KART_SWATCHES = [[10, 2], [11, 2], [12, 2], [13, 2]];
@@ -1335,13 +1337,24 @@ function recolorKart(v, color) {
   v.color = color;
   if (v.kenney) v.bodyMat.map = kartTex(color); else v.bodyMat.color.set(color);
 }
+// Name tags use the HUD's heading face (Barlow Condensed 700) and its text/ink colours. The webfont may
+// not be loaded when a tag is first drawn (no DOM text uses that weight yet), so each tag redraws itself
+// once the face arrives.
+const TAG_FAMILY = '"Barlow Condensed", Inter, sans-serif';
 function nameSprite(text) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
   const g = cv.getContext('2d');
-  g.font = '800 34px Nunito, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.lineWidth = 7; g.strokeStyle = '#23304A'; g.strokeText(text, 128, 34); g.fillStyle = '#FFF4DC'; g.fillText(text, 128, 34);
+  const draw = () => {
+    g.clearRect(0, 0, 256, 64);
+    let px = 40; g.font = `700 ${px}px ${TAG_FAMILY}`;
+    const w = g.measureText(text).width; if (w > 240) { px = Math.max(24, Math.floor(px * 240 / w)); g.font = `700 ${px}px ${TAG_FAMILY}`; } // long names shrink to fit
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    g.lineWidth = 6; g.strokeStyle = 'rgba(13,18,28,.85)'; g.strokeText(text, 128, 33); g.fillStyle = '#F3F5F9'; g.fillText(text, 128, 33);
+  };
+  draw();
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  if (document.fonts) document.fonts.load(`700 40px ${TAG_FAMILY}`, text).then(f => { if (f.length && sp.parent) { draw(); tex.needsUpdate = true; } }).catch(() => {});
   sp.scale.set(6.4, 1.6, 1); sp.position.y = 4.7; sp.renderOrder = 10; return sp;
 }
 
@@ -1409,6 +1422,7 @@ function proceduralKart(color) {
 
 // --- Kenney karts: loaded once per variant, geometry shared by every kart of that variant
 const kartModels = new Map();  // variant -> Promise<{ body, wheels: [{ geo, pos }] } | null>
+const kartModelsLoaded = new Map(); // variant -> the same model once loaded, for synchronous use
 let kartLoader = null, kartPalette = null, kenneyWheelMat = null;
 function loadKartModel(name) {
   if (!kartModels.has(name)) kartModels.set(name, (async () => {
@@ -1420,11 +1434,21 @@ function loadKartModel(name) {
     gltf.scene.traverse(o => {
       if (!o.isMesh) return;
       if (!kartPalette && o.material.map) { kartPalette = o.material.map; kenneyWheelMat = new THREE.MeshStandardMaterial({ map: kartPalette, roughness: 0.75, metalness: 0 }); }
-      if (/^wheel/i.test(o.name)) wheels.push({ geo: o.geometry, pos: o.getWorldPosition(new THREE.Vector3()) });
-      else parts.push(o.geometry.clone().applyMatrix4(o.matrixWorld)); // chassis + driver, merged
+      if (/^wheel/i.test(o.name)) { wheels.push({ geo: o.geometry, pos: o.getWorldPosition(new THREE.Vector3()) }); return; }
+      let m = o.matrixWorld;
+      if (/^character/i.test(o.name)) {
+        // Kenney's big-headed driver is as wide as the kart: shrink it around its seat (its local min y is
+        // 0.03) so the chase view shows the player's chassis and the kart ahead instead of one big helmet.
+        const base = new THREE.Vector3(0, 0.03, 0).applyMatrix4(o.matrixWorld);
+        m = new THREE.Matrix4().makeTranslation(base.x, base.y, base.z).multiply(new THREE.Matrix4().makeScale(DRIVER_SCALE, DRIVER_SCALE, DRIVER_SCALE))
+          .multiply(new THREE.Matrix4().makeTranslation(-base.x, -base.y, -base.z)).multiply(o.matrixWorld);
+      }
+      parts.push(o.geometry.clone().applyMatrix4(m)); // chassis + driver, merged
     });
     if (!kartPalette || wheels.length !== 4 || !parts.length) throw new Error('unexpected kart model ' + name);
-    return { body: mergeParts(parts), wheels };
+    const model = { body: mergeParts(parts), wheels };
+    kartModelsLoaded.set(name, model);
+    return model;
   })().catch(e => { console.info('Kenney kart unavailable, using the built-in kart:', e.message); return null; }));
   return kartModels.get(name);
 }
@@ -1467,11 +1491,33 @@ function kenneyKart(m, color) {
   });
   return { root, bodyMat, wheels, kenney: true };
 }
-// Put a model (procedural or Kenney) into a kart view, replacing the previous one.
-function setKartModel(v, m) {
-  if (v.model) { v.g.remove(v.model.root); v.model.bodyMat.dispose(); }
+// Put a model (procedural or Kenney) into a kart view, replacing the previous one. With `animate`, the old
+// model shrinks away and the new one pops up over SWAP_MS (driven by styleKart) instead of switching in one frame.
+const SWAP_MS = 320;
+function dropModel(v, m) { v.g.remove(m.root); m.bodyMat.dispose(); }
+function endSwap(v) { if (!v.swap) return; dropModel(v, v.swap.old); v.model.root.scale.copy(v.swap.to); v.model.root.visible = true; v.swap = null; }
+function setKartModel(v, m, animate) {
+  endSwap(v);
+  const old = v.model;
   v.model = m; v.kenney = m.kenney; v.bodyMat = m.bodyMat; v.wheels = m.wheels; v.g.add(m.root);
+  if (!old) return;
+  if (!animate) { dropModel(v, old); return; }
+  v.swap = { old, from: old.root.scale.clone(), to: m.root.scale.clone(), t0: performance.now() };
+  m.root.visible = false;
 }
+function stepSwap(v) {
+  const S = v.swap, k = Math.min(1, (performance.now() - S.t0) / SWAP_MS);
+  if (k >= 1) { endSwap(v); return; }
+  const out = Math.max(0, 1 - k / 0.45);               // old model shrinks away in the first ~45%
+  const u = Math.max(0, (k - 0.25) / 0.75), c = 1.70158; // new one grows with a small overshoot from 25%
+  const grow = u <= 0 ? 0 : 1 + (c + 1) * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2);
+  S.old.root.visible = out > 0.02; S.old.root.scale.copy(S.from).multiplyScalar(Math.max(out, 0.02));
+  v.model.root.visible = grow > 0.02; v.model.root.scale.copy(S.to).multiplyScalar(Math.max(grow, 0.02));
+}
+// The Kenney model variant a kart of this colour gets (driver variety follows the colour slot).
+const kartVariant = color => KART_VARIANTS[Math.max(0, COLORS.indexOf(color)) % KART_VARIANTS.length];
+// Resolves once this colour's kart model has loaded (or failed), or after `ms`, whichever is first.
+const kartModelReady = (color, ms) => Promise.race([loadKartModel(kartVariant(color)), new Promise(r => setTimeout(r, ms))]);
 
 function buildKart(color) {
   const g = new THREE.Group();
@@ -1480,14 +1526,21 @@ function buildKart(color) {
   const shield = new THREE.Mesh(shieldGeo, shieldMat); shield.position.y = 1.6; shield.renderOrder = 2; shield.visible = false; g.add(shield);
   const v = { g, bodyMat: null, wheels: null, spikes, ice, shield, tag: null, color, model: null, kenney: false, disposed: false };
   v.setColor = c => recolorKart(v, c); // handy for tests (?debug: SK.bots[0].view.setColor('#2F9BD8'))
-  setKartModel(v, proceduralKart(color));
-  // driver variety: the variant follows the colour slot
-  const variant = KART_VARIANTS[Math.max(0, COLORS.indexOf(color)) % KART_VARIANTS.length];
-  loadKartModel(variant).then(m => { if (m && !v.disposed) setKartModel(v, kenneyKart(m, v.color)); });
+  // Kenney kart straight away if its model is already loaded, else the procedural kart until it is.
+  const variant = kartVariant(color), ready = kartModelsLoaded.get(variant);
+  setKartModel(v, ready ? kenneyKart(ready, color) : proceduralKart(color));
+  // A model that arrives while the kart is on screen swaps in with a quick scale pop behind a puff, not in one frame.
+  if (!ready) loadKartModel(variant).then(m => {
+    if (!m || v.disposed) return;
+    const shown = !!v.g.parent && v.g.visible;
+    setKartModel(v, kenneyKart(m, v.color), shown);
+    if (shown) puffFx(v.g.position.x, v.g.position.z, v.color, 1.4);
+  });
   return v;
 }
 function disposeKart(v) {
   v.disposed = true; scene.remove(v.g);
+  if (v.swap) { v.swap.old.bodyMat.dispose(); v.swap = null; }
   if (v.model) v.model.bodyMat.dispose(); // geometry and the other materials are shared
   if (v.tag) { v.tag.material.map.dispose(); v.tag.material.dispose(); }
 }
@@ -1500,6 +1553,7 @@ function styleKart(v, s, t) {
   v.g.visible = s.alive;
   if (!s.alive) return;
   v.g.position.set(s.x, 0, s.z); v.g.rotation.y = s.yaw;
+  if (v.swap) stepSwap(v);
   v.spikes.visible = s.spikes; if (s.spikes) v.spikes.rotation.y = t * 6;
   v.ice.visible = s.frozen;
   v.shield.visible = s.protect && (Math.floor(t * 8) % 2 === 0);
@@ -2370,6 +2424,7 @@ $('#play').addEventListener('click', async () => {
   if (!ok) { Net.mode = 'solo'; Net.myKey = 'you'; }
   if (!botsEnabled) removeBots();
   for (const b of bots) { b.kb = {}; b.d = 0; }
+  await kartModelReady(COLORS[myColor], 2500); // brief, bounded wait so your own kart doesn't change model a few seconds in
   me = makeKartState(Net.myKey, name, myColor, false);
   me.view = buildKart(COLORS[myColor]); scene.add(me.view.g);
   respawn(me); started = true;
