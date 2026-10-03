@@ -548,11 +548,13 @@ resizeHooks.push(() => {
 });
 
 /* ---- auto quality: drop to Low once if the frame rate stays under 45 fps on High ----
-   Measures the real interval between rendered frames over a rolling 4 s window. Waits a few
-   seconds after load, game start, a quality change or the tab becoming visible again. A single
-   long frame (>250 ms: tab switch, GC, shader compile) is ignored, but back-to-back long frames
-   count (a truly slow device). Never raises quality on its own. */
-const PERF = { minFps: 45, window: 4, warmUntil: 0, last: 0, buckets: new Float32Array(4), frames: new Uint16Array(4), bi: 0, bt: 0, bn: 0, filled: 0, longPrev: false, dropped: false, dropAvg: 0, wasStarted: false, avg: 0, slowMs: 0 };
+   Measures the real interval between rendered frames in one-second buckets over a rolling 8 s
+   window, and drops only when the window averages under 45 fps AND at least 7 of its 8 seconds
+   were slow, so a few seconds of outside load (another app starting, an OS spike) never count.
+   Waits a few seconds after load, game start, a quality change or the tab becoming visible again.
+   A single long frame (>250 ms: tab switch, GC, shader compile) is ignored, but back-to-back long
+   frames count (a truly slow device). Never raises quality on its own. */
+const PERF = { minFps: 45, window: 8, warmUntil: 0, last: 0, buckets: new Float32Array(8), frames: new Uint16Array(8), bi: 0, bt: 0, bn: 0, filled: 0, longPrev: false, dropped: false, dropAvg: 0, wasStarted: false, avg: 0, slow: 0, slowMs: 0 };
 function perfReset(warmSec) {
   PERF.warmUntil = performance.now() + warmSec * 1000; PERF.last = 0;
   PERF.bt = 0; PERF.bn = 0; PERF.bi = 0; PERF.filled = 0; PERF.longPrev = false; PERF.avg = 0;
@@ -571,9 +573,10 @@ function perfSample(now) {
   PERF.bt = 0; PERF.bn = 0;
   if (PERF.filled < PERF.window) PERF.filled++;
   if (PERF.filled < PERF.window) return;
-  let t = 0, n = 0; for (let i = 0; i < PERF.window; i++) { t += PERF.buckets[i]; n += PERF.frames[i]; }
-  PERF.avg = n * 1000 / t;
-  if (PERF.avg < PERF.minFps) { PERF.dropped = true; PERF.dropAvg = PERF.avg; setQuality('low', true); }
+  let t = 0, n = 0, slow = 0;
+  for (let i = 0; i < PERF.window; i++) { t += PERF.buckets[i]; n += PERF.frames[i]; if (PERF.frames[i] * 1000 < PERF.minFps * PERF.buckets[i]) slow++; }
+  PERF.avg = n * 1000 / t; PERF.slow = slow;
+  if (PERF.avg < PERF.minFps && slow >= PERF.window - 1) { PERF.dropped = true; PERF.dropAvg = PERF.avg; setQuality('low', true); }
 }
 
 onQuality(level => {
@@ -1512,7 +1515,9 @@ function styleKart(v, s, t) {
 /* ---------- projectile & fx meshes ---------- */
 // HDR colour for glowing effects: scales a colour so its linear luminance reaches `lum`
 // (bloom threshold is BLOOM.threshold). Tone mapping stays on, so it still reads as the hue.
-// `deep` (0..1) darkens the weaker channels first, so ACES keeps a fiery hue instead of going white.
+// `deep` (0..1) darkens the weaker channels first. Note ACES desaturates anything bright: warm
+// colours at lum >= the bloom threshold come out peach/cream, so effects that must read as a
+// saturated hue keep their body below the threshold and let a small, hotter core do the glowing.
 function hdr(c, lum, deep = 0) {
   const col = new THREE.Color(c); col.g *= 1 - deep * 0.35; col.b *= 1 - deep * 0.6;
   const l = col.r * 0.2126 + col.g * 0.7152 + col.b * 0.0722; return col.multiplyScalar(Math.max(1, lum / Math.max(l, 0.02)));
@@ -1544,16 +1549,36 @@ function makeShotMesh(type, yaw) {
 }
 const fxList = [];
 const fxSphereGeo = new THREE.SphereGeometry(1, 16, 12), fxRingGeo = new THREE.RingGeometry(0.8, 1, 32), debrisGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+// Tyre smoke: camera-facing sprites with a soft, slightly lumpy alpha puff (tinted by the sprite
+// colour). smokeQuad spans -1..1, so a sprite's scale is its radius, the same as the old spheres.
+const smokeQuad = new THREE.PlaneGeometry(2, 2).deleteAttribute('normal');
+const smokeTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d');
+  const blob = (x, y, r, a) => {
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, `rgba(255,255,255,${a})`); gr.addColorStop(0.5, `rgba(255,255,255,${a * 0.75})`);
+    gr.addColorStop(0.8, `rgba(255,255,255,${a * 0.3})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  };
+  blob(64, 64, 62, 1);
+  for (const [x, y, r] of [[46, 52, 30], [80, 50, 28], [58, 80, 30], [84, 78, 24]]) blob(x, y, r, 0.35);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
 function boomFx(x, z, radius, color = '#FF9A3C') {
-  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: hdr(color, 2.0, 1), transparent: true, opacity: .9, depthWrite: false }));
+  // fireball shell: saturated orange below the bloom threshold (green/blue pulled down so ACES keeps it fiery)
+  const shell = hdr(color, 0.5, 1); shell.g *= 0.75; shell.b *= 0.4;
+  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: shell, transparent: true, opacity: .9, depthWrite: false }));
   s.position.set(x, 1, z); s.renderOrder = 2; scene.add(s);
+  // hot core (lum ~2.7, above the threshold) gives the bloom; it grows with the shell and is gone by mid-life
+  const core = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: shell.clone().multiplyScalar(6), transparent: true, depthWrite: false }));
+  core.scale.setScalar(0.45); core.renderOrder = 3; s.add(core);
   fxList.push({ m: s, t: 0, dur: 0.45, kind: 'grow', r: radius });
   const ring = new THREE.Mesh(fxRingGeo, new THREE.MeshBasicMaterial({ color: hdr('#FFE2B0', 2.0), transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
   ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.2, z); ring.renderOrder = 2; scene.add(ring);
   fxList.push({ m: ring, t: 0, dur: 0.5, kind: 'grow', r: radius * 1.3 });
   const n = Math.min(14, 5 + Math.round(radius));
   for (let i = 0; i < n; i++) {
-    const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : hdr(color, 1.8, 1), transparent: true }));
+    const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : shell, transparent: true }));
     d.position.set(x, 1, z); scene.add(d);
     const a = Math.random() * TAU, sp = rand(6, 14);
     fxList.push({ m: d, t: 0, dur: rand(.6, 1), kind: 'debris', vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(6, 14) });
@@ -1565,8 +1590,20 @@ function puffFx(x, z, color, size = 1.2) {
   s.position.set(x, 1.2, z); s.renderOrder = 2; scene.add(s); fxList.push({ m: s, t: 0, dur: 0.3, kind: 'grow', r: size });
 }
 // drift: skid marks (one instanced mesh used as a ring buffer) and tyre smoke
+// Skid alpha: soft long edges, and both ends ramp over ~8% of the quad (about the 0.05 overlap
+// between consecutive quads), so joints are not drawn twice at full opacity (no dark notches).
+const skidTex = (() => {
+  const W = 16, H = 128, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'), img = g.createImageData(W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const v = (y + 0.5) / H, u = (x + 0.5) / W, i = (y * W + x) * 4;
+    const a = Math.min(1, v / 0.08, (1 - v) / 0.08) * Math.min(1, u / 0.25, (1 - u) / 0.25);
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = 255; img.data[i + 3] = Math.round(255 * a);
+  }
+  g.putImageData(img, 0, 0); return new THREE.CanvasTexture(c);
+})();
 const skidMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
-  new THREE.MeshBasicMaterial({ color: '#15181F', transparent: true, opacity: 0.5, depthWrite: false }), DRIVE.SKID_MAX);
+  new THREE.MeshBasicMaterial({ color: '#15181F', map: skidTex, transparent: true, opacity: 0.5, depthWrite: false }), DRIVE.SKID_MAX);
 skidMesh.frustumCulled = false; skidMesh.renderOrder = 1; scene.add(skidMesh);
 let skidNext = 0;
 const skidM = new THREE.Matrix4(), skidQ = new THREE.Quaternion(), skidP = new THREE.Vector3(), skidS = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
@@ -1593,7 +1630,8 @@ function driftFx(v, drifting, x, z, bodyYaw, dt) {
   if (v.smokeT <= 0) {
     v.smokeT = DRIVE.SMOKE_EVERY;
     for (const [wx, wz] of wheels) {
-      const m = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: '#D9D6D0', transparent: true, opacity: 0.45, depthWrite: false })); // stays below the bloom threshold
+      const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, color: '#D9D6D0', transparent: true, opacity: 0.45, depthWrite: false, rotation: rand(0, TAU) })); // stays below the bloom threshold
+      m.geometry = smokeQuad; m.frustumCulled = false;
       m.position.set(wx + rand(-0.2, 0.2), 0.5, wz + rand(-0.2, 0.2)); m.renderOrder = 2; scene.add(m); // drawn over skid marks
       fxList.push({ m, t: 0, dur: rand(0.45, 0.7), kind: 'smoke', r: rand(1.1, 1.6) });
     }
@@ -1602,8 +1640,11 @@ function driftFx(v, drifting, x, z, bodyYaw, dt) {
 function updateFx(dt) {
   for (let i = fxList.length - 1; i >= 0; i--) {
     const f = fxList[i]; f.t += dt; const k = f.t / f.dur;
-    if (k >= 1) { scene.remove(f.m); f.m.material.dispose(); fxList.splice(i, 1); continue; }
-    if (f.kind === 'grow') { f.m.scale.setScalar(0.2 + f.r * (1 - Math.pow(1 - k, 3))); f.m.material.opacity = (1 - k) * 0.9; }
+    if (k >= 1) { scene.remove(f.m); f.m.material.dispose(); for (const c of f.m.children) c.material.dispose(); fxList.splice(i, 1); continue; }
+    if (f.kind === 'grow') {
+      f.m.scale.setScalar(0.2 + f.r * (1 - Math.pow(1 - k, 3))); f.m.material.opacity = (1 - k) * 0.9;
+      if (f.m.children.length) f.m.children[0].material.opacity = Math.max(0, 1 - 2 * k); // boomFx hot core
+    }
     else if (f.kind === 'smoke') { f.m.scale.setScalar(0.35 + f.r * k); f.m.position.y += dt * 1.6; f.m.material.opacity = (1 - k) * 0.45; }
     else { f.vy -= 30 * dt; f.m.position.x += f.vx * dt; f.m.position.y = Math.max(0.25, f.m.position.y + f.vy * dt); f.m.position.z += f.vz * dt; f.m.rotation.x += dt * 8; f.m.material.opacity = 1 - k; }
   }
@@ -2433,7 +2474,21 @@ if (/[?&]debug(?:[=&]|$)/.test(location.search)) {
     get physics() { return physics; }, get skidNext() { return skidNext; },
   };
 }
-requestAnimationFrame(frame);
+// Shader warm-up: compile the scene's programs and the enabled post passes' full-screen shaders in
+// parallel (KHR_parallel_shader_compile) before the first frame, instead of linking them
+// synchronously inside it. Compiled against the composer's HalfFloat target, because that is where
+// RenderPass and the passes draw (no tone mapping, linear output); to-screen variants would be
+// rebuilt on the first frame. Disabled passes (GTAO on Low) are skipped; OutputPass sets its
+// defines on its first render, so it is left to that frame.
+{
+  const warmScene = new THREE.Scene(), quad = new THREE.PlaneGeometry(2, 2).deleteAttribute('normal'); // like FullScreenQuad: position + uv
+  for (const p of composer.passes) if (p.enabled && p !== outputPass) for (const v of Object.values(p))
+    for (const m of [].concat(v)) if (m && m.isShaderMaterial && !m.isRawShaderMaterial) warmScene.add(new THREE.Mesh(quad, m));
+  renderer.setRenderTarget(composer.renderTarget1);
+  const warm = Promise.all([renderer.compileAsync(scene, camera), renderer.compileAsync(warmScene, camera)]);
+  renderer.setRenderTarget(null);
+  warm.catch(() => {}).finally(() => { quad.dispose(); requestAnimationFrame(frame); });
+}
 </script>
 </body>
 </html>
