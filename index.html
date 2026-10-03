@@ -188,6 +188,43 @@ const rand = (a, b) => a + Math.random() * (b - a);
 const wrap = a => ((a + Math.PI) % TAU + TAU) % TAU - Math.PI;
 const r1 = v => Math.round(v * 10) / 10, r2 = v => Math.round(v * 100) / 100;
 
+/* ---------- driving config: every handling number lives here ---------- */
+const DRIVE = {
+  // simulation clock
+  STEP: 1 / 60,             // fixed physics step (s)
+  MAX_STEPS: 6,             // most physics steps per frame before dropping backlog
+  // speed
+  TOP_SPEED: 26, STAR_TOP_SPEED: 34,
+  ACCEL: 38, STAR_ACCEL: 50, // forward and reverse use the same acceleration
+  BRAKE: 60,                // decel when pressing reverse while still rolling forward
+  REVERSE_RATIO: 0.8,       // reverse top speed = top speed * this
+  DRAG_COAST: 1.7, DRAG_THROTTLE: 0.5, DRAG_FROZEN: 6,
+  // handling
+  GRIP: 7.5,                // lateral grip (how fast sideways slide is killed)
+  TURN_RATE: 2.7,           // rad/s at full steer
+  TURN_FULL_SPEED: 7,       // speed at which steering reaches full strength
+  // drifting
+  DRIFT_STEER_MIN: 0.5,     // |steer| above this counts as holding a turn
+  DRIFT_HOLD_TIME: 0.3,     // s the same turn must be held to start a drift
+  DRIFT_START_SPEED: 0.70,  // fraction of top speed needed to start
+  DRIFT_END_SPEED: 0.45,    // drift ends below this fraction of top speed
+  DRIFT_GRIP: 2,            // lateral grip while drifting
+  DRIFT_TURN_MULT: 1.3,     // turn rate multiplier while drifting
+  DRIFT_CARVE: 0.55,        // share of the kart's rotation the velocity follows while drifting.
+                            // 0.55 gives a steady ~30 deg slide (normal cornering ~19 deg) at full speed. Lower = wider
+                            // slide; below ~0.45 it starts losing speed; 0 = pure low-grip slide, which spins out
+  DRIFT_BODY_ANGLE: 20,     // degrees the body visually angles into the slide
+  DRIFT_LEAN_RATE: 10,      // how fast the body eases to/from that angle (1/s)
+  DRIFT_BOOST: true,        // speed boost on exit from a long drift
+  DRIFT_BOOST_MIN_TIME: 1.0,// drift must last longer than this (s)
+  DRIFT_BOOST_SPEED: 4,     // extra speed
+  DRIFT_BOOST_TIME: 0.6,    // s at full boost
+  DRIFT_BOOST_FADE: 0.2,    // s to ease the boost back out
+  // drift visuals
+  SKID_WIDTH: 0.4, SKID_SEG: 0.5, SKID_MAX: 800,
+  SMOKE_EVERY: 0.06,        // s between smoke puffs per kart
+};
+
 const ROUND_MS = 180000, BREAK_MS = 15000, PERIOD = ROUND_MS + BREAK_MS;
 const RESPAWN_MS = 3000, PROTECT_MS = 2000, BOX_RESPAWN = 6000;
 const KART_R = 1.5, HALF = 64, WALL_IN = HALF - 0.6;
@@ -434,11 +471,47 @@ function puffFx(x, z, color, size = 1.2) {
   const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .8, depthWrite: false }));
   s.position.set(x, 1.2, z); scene.add(s); fxList.push({ m: s, t: 0, dur: 0.3, kind: 'grow', r: size });
 }
+// drift: skid marks (one instanced mesh used as a ring buffer) and tyre smoke
+const skidMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: '#15181F', transparent: true, opacity: 0.5, depthWrite: false }), DRIVE.SKID_MAX);
+skidMesh.frustumCulled = false; skidMesh.renderOrder = 1; scene.add(skidMesh);
+let skidNext = 0;
+const skidM = new THREE.Matrix4(), skidQ = new THREE.Quaternion(), skidP = new THREE.Vector3(), skidS = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+function addSkid(ax, az, bx, bz) {
+  const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz);
+  skidP.set((ax + bx) / 2, 0.045, (az + bz) / 2); skidQ.setFromAxisAngle(UP, Math.atan2(dx, dz)); skidS.set(DRIVE.SKID_WIDTH, 1, len + 0.05);
+  skidMesh.setMatrixAt(skidNext, skidM.compose(skidP, skidQ, skidS)); skidMesh.instanceMatrix.needsUpdate = true;
+  skidNext = (skidNext + 1) % DRIVE.SKID_MAX;
+}
+function clearSkids() { skidM.makeScale(0, 0, 0); for (let i = 0; i < DRIVE.SKID_MAX; i++) skidMesh.setMatrixAt(i, skidM); skidMesh.instanceMatrix.needsUpdate = true; }
+clearSkids();
+// v: kart view; x/z/bodyYaw: the pose being drawn this frame
+function driftFx(v, drifting, x, z, bodyYaw, dt) {
+  if (!drifting) { v.skid = null; return; }
+  const c = Math.cos(bodyYaw), s = Math.sin(bodyYaw);
+  const wheels = [-1.3, 1.3].map(lx => [x + lx * c + -1.1 * s, z - lx * s + -1.1 * c]); // rear wheels
+  if (v.skid && Math.hypot(wheels[0][0] - v.skid[0][0], wheels[0][1] - v.skid[0][1]) > 6) v.skid = null; // teleported
+  if (!v.skid) v.skid = wheels;
+  else if (Math.hypot(wheels[0][0] - v.skid[0][0], wheels[0][1] - v.skid[0][1]) >= DRIVE.SKID_SEG) {
+    for (let i = 0; i < 2; i++) addSkid(v.skid[i][0], v.skid[i][1], wheels[i][0], wheels[i][1]);
+    v.skid = wheels;
+  }
+  v.smokeT = (v.smokeT || 0) - dt;
+  if (v.smokeT <= 0) {
+    v.smokeT = DRIVE.SMOKE_EVERY;
+    for (const [wx, wz] of wheels) {
+      const m = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: '#E9E6E0', transparent: true, opacity: 0.45, depthWrite: false }));
+      m.position.set(wx + rand(-0.2, 0.2), 0.5, wz + rand(-0.2, 0.2)); scene.add(m);
+      fxList.push({ m, t: 0, dur: rand(0.45, 0.7), kind: 'smoke', r: rand(1.1, 1.6) });
+    }
+  }
+}
 function updateFx(dt) {
   for (let i = fxList.length - 1; i >= 0; i--) {
     const f = fxList[i]; f.t += dt; const k = f.t / f.dur;
     if (k >= 1) { scene.remove(f.m); f.m.material.dispose(); fxList.splice(i, 1); continue; }
     if (f.kind === 'grow') { f.m.scale.setScalar(0.2 + f.r * (1 - Math.pow(1 - k, 3))); f.m.material.opacity = (1 - k) * 0.9; }
+    else if (f.kind === 'smoke') { f.m.scale.setScalar(0.35 + f.r * k); f.m.position.y += dt * 1.6; f.m.material.opacity = (1 - k) * 0.45; }
     else { f.vy -= 30 * dt; f.m.position.x += f.vx * dt; f.m.position.y = Math.max(0.25, f.m.position.y + f.vy * dt); f.m.position.z += f.vz * dt; f.m.rotation.x += dt * 8; f.m.material.opacity = 1 - k; }
   }
 }
@@ -551,7 +624,7 @@ let myShots = [], myBx = [], myTg = [];
 let myColor = 0;
 
 function makeKartState(key, name, colorIdx, isBot) {
-  return { key, name, colorIdx, isBot, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, sp: 0, alive: false, deadAt: -1e9, protectUntil: 0,
+  return { key, name, colorIdx, isBot, x: 0, z: 0, yaw: 0, ...driveState(), alive: false, deadAt: -1e9, protectUntil: 0,
     spikeUntil: 0, starUntil: 0, frozenUntil: 0, weapon: null, charges: 0, fireCd: 0, kb: {}, d: 0, lk: '', ai: { nextFire: 0, jit: 0, jitAt: 0 }, view: null };
 }
 function vulnerable(k, now) { return k.alive && now >= k.protectUntil && now >= k.starUntil; }
@@ -563,8 +636,9 @@ function respawn(k) {
     let md = 1e9; for (const o of others) md = Math.min(md, Math.hypot(o.x - s[0], o.z - s[1]));
     md += Math.random() * 6; if (md > bd) { bd = md; best = s; }
   }
-  Object.assign(k, { x: best[0], z: best[1], yaw: Math.atan2(-best[0], -best[1]), vx: 0, vz: 0, sp: 0, alive: true, protectUntil: now + PROTECT_MS,
+  Object.assign(k, { x: best[0], z: best[1], yaw: Math.atan2(-best[0], -best[1]), alive: true, protectUntil: now + PROTECT_MS,
     spikeUntil: 0, starUntil: 0, frozenUntil: 0, weapon: null, charges: 0 });
+  resetDrive(k); // zero velocity/drift and snap interpolation so the kart doesn't streak across the map
 }
 function localKarts() { const a = started && me ? [me] : []; return bots.length ? a.concat(bots) : a; }
 function allKarts(now) {
@@ -609,24 +683,80 @@ function collideWorld(k) {
     const vn = k.vx * nx + k.vz * nz; if (vn < 0) { k.vx -= nx * vn * 1.3; k.vz -= nz * vn * 1.3; }
   }
 }
+// Per-kart driving state; spread into every kart object.
+function driveState() {
+  return { vx: 0, vz: 0, sp: 0, drift: 0, driftT: 0, steerDir: 0, steerHold: 0, boostT: 0, lean: 0, px: 0, pz: 0, pyaw: 0, plean: 0 };
+}
+function resetDrive(k) {
+  Object.assign(k, driveState(), { px: k.x, pz: k.z, pyaw: k.yaw });
+}
+const boostExtra = k => k.boostT > 0 ? DRIVE.DRIFT_BOOST_SPEED * Math.min(1, k.boostT / DRIVE.DRIFT_BOOST_FADE) : 0;
+// One fixed physics step for one kart. dt is always DRIVE.STEP in the game.
 function drive(k, thr, steer, dt, now) {
-  if (!k.alive) return;
+  const D = DRIVE;
+  if (!k.alive) { k.drift = 0; k.driftT = 0; k.boostT = 0; k.lean = 0; return; }
   const frozen = now < k.frozenUntil, star = now < k.starUntil;
   if (frozen) { thr = 0; steer = 0; }
   const fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
+  const top = star ? D.STAR_TOP_SPEED : D.TOP_SPEED, acc = star ? D.STAR_ACCEL : D.ACCEL, topRev = top * D.REVERSE_RATIO;
   let sp = k.vx * fx + k.vz * fz;
-  const maxF = star ? 34 : 26, maxR = 11, acc = star ? 50 : 38;
-  if (thr > 0 && sp < maxF) { k.vx += fx * acc * thr * dt; k.vz += fz * acc * thr * dt; }
-  else if (thr < 0 && sp > -maxR) { const a = sp > 0 ? 60 : 24; k.vx += fx * a * thr * dt; k.vz += fz * a * thr * dt; }
-  const drag = frozen ? 6 : thr === 0 ? 1.7 : 0.5;
+  if (thr > 0 && sp < top + boostExtra(k)) { k.vx += fx * acc * thr * dt; k.vz += fz * acc * thr * dt; }
+  else if (thr < 0 && sp > -topRev) { const a = sp > 0 ? D.BRAKE : acc; k.vx += fx * a * thr * dt; k.vz += fz * a * thr * dt; }
+  const drag = frozen ? D.DRAG_FROZEN : thr === 0 ? D.DRAG_COAST : D.DRAG_THROTTLE;
   const dk = Math.max(0, 1 - drag * dt); k.vx *= dk; k.vz *= dk;
   sp = k.vx * fx + k.vz * fz;
-  const lx = k.vx - fx * sp, lz = k.vz - fz * sp, g = Math.min(1, 7.5 * dt);
+  // drift: hold one turn direction long enough at speed to start; release or slow down to end
+  const dir = steer > D.DRIFT_STEER_MIN ? 1 : steer < -D.DRIFT_STEER_MIN ? -1 : 0;
+  if (dir !== k.steerDir) { k.steerDir = dir; k.steerHold = dir ? dt : 0; } else if (dir) k.steerHold += dt;
+  if (k.drift) {
+    k.driftT += dt;
+    if (dir !== k.drift || Math.hypot(k.vx, k.vz) < D.DRIFT_END_SPEED * top || frozen) {
+      if (D.DRIFT_BOOST && !frozen && k.driftT > D.DRIFT_BOOST_MIN_TIME) {
+        k.boostT = D.DRIFT_BOOST_TIME + D.DRIFT_BOOST_FADE;
+        k.vx += fx * D.DRIFT_BOOST_SPEED; k.vz += fz * D.DRIFT_BOOST_SPEED;
+      }
+      k.drift = 0; k.driftT = 0;
+    }
+  } else if (dir && k.steerHold >= D.DRIFT_HOLD_TIME - 1e-6 && sp > D.DRIFT_START_SPEED * top) {
+    k.drift = dir; k.driftT = 0;
+  }
+  sp = k.vx * fx + k.vz * fz;
+  // lateral grip: kill sideways velocity (much less of it while drifting)
+  const lx = k.vx - fx * sp, lz = k.vz - fz * sp, g = Math.min(1, (k.drift ? D.DRIFT_GRIP : D.GRIP) * dt);
   k.vx -= lx * g; k.vz -= lz * g;
-  k.yaw = wrap(k.yaw - steer * 2.7 * clamp(sp / 7, -1, 1) * dt);
-  const s = Math.hypot(k.vx, k.vz); if (s > maxF) { k.vx *= maxF / s; k.vz *= maxF / s; }
+  const turn = D.TURN_RATE * (k.drift ? D.DRIFT_TURN_MULT : 1);
+  const dyaw = -steer * turn * clamp(sp / D.TURN_FULL_SPEED, -1, 1) * dt;
+  k.yaw = wrap(k.yaw + dyaw);
+  if (k.drift && D.DRIFT_CARVE) { // velocity follows part of the rotation, so the slide holds instead of spinning out
+    const a = dyaw * D.DRIFT_CARVE, c = Math.cos(a), s = Math.sin(a), vx = k.vx;
+    k.vx = vx * c + k.vz * s; k.vz = k.vz * c - vx * s;
+  }
+  // visual body angle into the slide (yaw decreases when steering right)
+  const leanTarget = -k.drift * D.DRIFT_BODY_ANGLE * Math.PI / 180;
+  k.lean += (leanTarget - k.lean) * Math.min(1, D.DRIFT_LEAN_RATE * dt);
+  // speed cap: forward top (+ drift boost) or reverse top
+  const cap = sp < 0 ? topRev : top + boostExtra(k);
+  const s = Math.hypot(k.vx, k.vz); if (s > cap) { k.vx *= cap / s; k.vz *= cap / s; }
+  k.boostT = Math.max(0, k.boostT - dt);
   k.x += k.vx * dt; k.z += k.vz * dt; k.sp = sp;
   collideWorld(k);
+}
+// Fixed-timestep driver: feed it real frame times, it calls step(DRIVE.STEP) a whole
+// number of times and leaves alpha (0..1) for interpolating between the last two states.
+function makeFixedLoop(step) {
+  const L = { acc: 0, alpha: 0, advance(frameDt) {
+    L.acc += frameDt; let n = 0;
+    while (L.acc >= DRIVE.STEP - 1e-9 && n < DRIVE.MAX_STEPS) { step(DRIVE.STEP); L.acc -= DRIVE.STEP; n++; }
+    if (n === DRIVE.MAX_STEPS) L.acc = Math.min(L.acc, DRIVE.STEP); // too far behind: drop backlog
+    L.acc = Math.max(0, L.acc); L.alpha = Math.min(1, L.acc / DRIVE.STEP);
+    return n;
+  } };
+  return L;
+}
+// Remember the state before a step, so rendering can blend previous -> current.
+function savePrev(k) { k.px = k.x; k.pz = k.z; k.pyaw = k.yaw; k.plean = k.lean; }
+function renderPose(k, a) {
+  return { x: k.px + (k.x - k.px) * a, z: k.pz + (k.z - k.pz) * a, yaw: wrap(k.pyaw + wrap(k.yaw - k.pyaw) * a), lean: k.plean + (k.lean - k.plean) * a };
 }
 function pushApart(k, karts) {
   if (!k.alive) return;
@@ -878,6 +1008,9 @@ function syncRemotes(dt, now) {
     if (Math.hypot(tx - R.dx, tz - R.dz) > 14) { R.dx = tx; R.dz = tz; }
     const f = 1 - Math.exp(-dt * 14);
     R.dx += (tx - R.dx) * f; R.dz += (tz - R.dz) * f; R.dyaw = wrap(R.dyaw + wrap((+p.y || 0) - R.dyaw) * f);
+    // drift flag: -1/0/1 (direction); older clients don't send it
+    R.drift = p.a ? clamp(Math.round(+p.dr || 0), -1, 1) : 0;
+    R.lean = (R.lean || 0) + (-R.drift * DRIVE.DRIFT_BODY_ANGLE * Math.PI / 180 - (R.lean || 0)) * (1 - Math.exp(-dt * DRIVE.DRIFT_LEAN_RATE));
   }
   for (const [key, R] of remotes) if (!seen.has(key)) { disposeKart(R.view); remotes.delete(key); pushFeed(R.name, null, false, 'left'); }
 }
@@ -887,7 +1020,7 @@ function buildPresence(now) {
   myTg = myTg.filter(t => now - t.t < 8000).slice(-10);
   const fx = (now < me.spikeUntil ? 'k' : '') + (now < me.starUntil ? 's' : '') + (now < me.frozenUntil ? 'f' : '') + (now < me.protectUntil ? 'u' : '');
   // presence keys must be plain identifiers, so maps travel as [key, value] pairs
-  return { v: 1, n: me.name, c: me.colorIdx, x: r1(me.x), z: r1(me.z), y: r2(me.yaw), vx: r1(me.vx), vz: r1(me.vz), a: me.alive ? 1 : 0, fx,
+  return { v: 1, n: me.name, c: me.colorIdx, x: r1(me.x), z: r1(me.z), y: r2(me.yaw), vx: r1(me.vx), vz: r1(me.vz), a: me.alive ? 1 : 0, fx, dr: me.drift,
     rd: curRd, kb: Object.entries(me.kb), d: me.d, lk: me.lk, sh: myShots.map(s => s.e), bx: myBx.map(b => [b.i, b.t]), tg: myTg.map(t => t.k), ts: now };
 }
 
@@ -898,6 +1031,7 @@ function newRound(rd) {
   myShots = []; myBx = []; myTg = [];
   for (const k of localKarts()) { k.kb = {}; k.d = 0; k.lk = ''; respawn(k); }
   for (const R of remotes.values()) { R.lastD = null; R.lastRd = null; }
+  clearSkids();
 }
 function standings() {
   const ents = [];
@@ -1036,6 +1170,26 @@ $('#play').addEventListener('click', async () => {
 /* ---------- main loop ---------- */
 let last = performance.now(), sendAt = 0, cleanAt = 0, t0 = performance.now();
 const camPos = new THREE.Vector3(0, 60, 90), camLook = new THREE.Vector3();
+// One fixed 60 Hz step of kart physics: player input, bots, respawns, kart-vs-kart pushes.
+function physicsStep(dt) {
+  const now = Date.now(), playing = now % PERIOD < ROUND_MS;
+  const karts = allKarts(now);
+  for (const k of localKarts()) savePrev(k);
+  if (started) {
+    if (playing) { const { thr, steer } = readInput(); drive(me, thr, steer, dt, now); }
+    else drive(me, 0, 0, dt, now);
+    if (!me.alive && playing && now - me.deadAt >= RESPAWN_MS) respawn(me);
+  }
+  for (const b of bots) {
+    const c = playing ? botThink(b, dt, now, karts) : { thr: 0, steer: 0, fire: false };
+    drive(b, c.thr, c.steer, dt, now);
+    if (c.fire) fire(b, now);
+    if (!b.alive && playing && now - b.deadAt >= RESPAWN_MS + rand(0, 400)) respawn(b);
+  }
+  const after = allKarts(now);
+  for (const k of localKarts()) pushApart(k, after);
+}
+const physics = makeFixedLoop(physicsStep);
 function update(dt) {
   const now = Date.now(), tSec = (performance.now() - t0) / 1000;
   const rd = Math.floor(now / PERIOD), phaseT = now % PERIOD, playing = phaseT < ROUND_MS;
@@ -1044,25 +1198,12 @@ function update(dt) {
   // bots fill in only while no other human is here
   if (botsEnabled && remotes.size === 0) addBots(); else if (bots.length) removeBots();
 
-  let karts = allKarts(now);
-  // local control
-  if (started) {
-    if (playing) {
-      const { thr, steer } = readInput();
-      drive(me, thr, steer, dt, now);
-      if (firePressed || (fireHeld && me.weapon === 'minigun')) fire(me, now);
-    } else drive(me, 0, 0, dt, now);
-    if (!me.alive && playing && now - me.deadAt >= RESPAWN_MS) respawn(me);
-  }
+  // kart physics runs at a fixed rate; A blends the last two physics states for drawing
+  physics.advance(dt);
+  const A = physics.alpha;
+  if (started && playing && (firePressed || (fireHeld && me.weapon === 'minigun'))) fire(me, now);
   firePressed = false;
-  for (const b of bots) {
-    const c = playing ? botThink(b, dt, now, karts) : { thr: 0, steer: 0, fire: false };
-    drive(b, c.thr, c.steer, dt, now);
-    if (c.fire) fire(b, now);
-    if (!b.alive && playing && now - b.deadAt >= RESPAWN_MS + rand(0, 400)) respawn(b);
-  }
-  karts = allKarts(now);
-  for (const k of localKarts()) pushApart(k, karts);
+  const karts = allKarts(now);
   // boxes
   for (const k of localKarts()) {
     if (!k.alive || k.weapon || !playing) continue;
@@ -1079,17 +1220,22 @@ function update(dt) {
   }
   if (playing) { updateShots(dt, karts, now); contactKills(karts, now); }
   // visuals
-  for (const k of localKarts()) styleKart(k.view, { x: k.x, z: k.z, yaw: k.yaw, alive: k.alive, spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil, sp: k.sp }, tSec);
+  for (const k of localKarts()) {
+    const P = renderPose(k, A), body = P.yaw + P.lean;
+    styleKart(k.view, { x: P.x, z: P.z, yaw: body, alive: k.alive, spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil, sp: k.sp }, tSec);
+    driftFx(k.view, k.alive && k.drift !== 0, P.x, P.z, body, dt);
+  }
   for (const R of remotes.values()) {
-    const fx = String(R.p.fx || '');
-    styleKart(R.view, { x: R.dx, z: R.dz, yaw: R.dyaw, alive: !!R.p.a, spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u'), sp: Math.hypot(+R.p.vx || 0, +R.p.vz || 0) }, tSec);
+    const fx = String(R.p.fx || ''), body = R.dyaw + (R.lean || 0);
+    styleKart(R.view, { x: R.dx, z: R.dz, yaw: body, alive: !!R.p.a, spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u'), sp: Math.hypot(+R.p.vx || 0, +R.p.vz || 0) }, tSec);
+    driftFx(R.view, !!R.p.a && !!R.drift, R.dx, R.dz, body, dt);
   }
   updateFx(dt);
   // camera
   if (started) {
-    const fx = Math.sin(me.yaw), fz = Math.cos(me.yaw);
+    const M = renderPose(me, A), fx = Math.sin(M.yaw), fz = Math.cos(M.yaw);
     const back = camera.aspect < 1 ? 18 : 15, high = camera.aspect < 1 ? 14 : 11;
-    if (me.alive) { camPos.lerp(new THREE.Vector3(me.x - fx * back, high, me.z - fz * back), 1 - Math.exp(-dt * 5)); camLook.lerp(new THREE.Vector3(me.x + fx * 5, 1, me.z + fz * 5), 1 - Math.exp(-dt * 8)); }
+    if (me.alive) { camPos.lerp(new THREE.Vector3(M.x - fx * back, high, M.z - fz * back), 1 - Math.exp(-dt * 5)); camLook.lerp(new THREE.Vector3(M.x + fx * 5, 1, M.z + fz * 5), 1 - Math.exp(-dt * 8)); }
     camera.position.copy(camPos);
     if (shake > 0) { camera.position.x += rand(-1, 1) * shake; camera.position.y += rand(-1, 1) * shake; shake = Math.max(0, shake - dt * 2.5); }
     camera.lookAt(camLook);
