@@ -1011,7 +1011,8 @@ scene.add(sceneryCore, sceneryDetail);
     return out;
   };
   const loader = new GLTFLoader(), files = [...new Set(plan.map(p => p[0]))];
-  Promise.allSettled(files.map(f => loader.loadAsync('assets/racing-kit/' + f + '.glb'))).then(res => {
+  // no fetch from file:// (blocked by the browser): the procedural fallback below runs instead
+  (location.protocol === 'file:' ? Promise.resolve([]) : Promise.allSettled(files.map(f => loader.loadAsync('assets/racing-kit/' + f + '.glb')))).then(res => {
     const models = {};
     res.forEach((r, i) => {
       if (r.status !== 'fulfilled') return;
