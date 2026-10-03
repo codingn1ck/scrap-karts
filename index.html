@@ -893,27 +893,222 @@ onQuality(level => { // Low: no trees/flags/banner towers, no tarmac bump and ro
    Collision sizes come from OBST and KART_R; models must match them.
    ========================================================================= */
 // obstacles
-function stripeTex(color, vertical) {
-  return canvasTex(128, 128, (g, w, h) => {
-    g.fillStyle = color; g.fillRect(0, 0, w, h);
-    g.fillStyle = 'rgba(0,0,0,.14)';
-    for (let i = 0; i < 8; i++) vertical ? g.fillRect(i * 16 + 10, 0, 4, h) : g.fillRect(0, i * 16 + 10, w, 4);
-    g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 6; g.strokeRect(0, 0, w, h);
-  });
-}
-for (const o of OBST) {
-  if (o.kind === 'tires') {
-    const m = lam('#2E2E36'), rim = lam('#4A4A56');
-    for (let i = 0; i < 3; i++) {
-      const t = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.55, 10, 20), i === 1 ? rim : m);
-      t.rotation.x = Math.PI / 2; t.position.set(o.x, 0.55 + i * 1.05, o.z); t.castShadow = t.receiveShadow = true; scene.add(t);
-    }
-    continue;
+// Every model is built from parts that carry a vertex colour, then merged, so each obstacle
+// kind (and each kart part) is one draw call. Geometry is built once and shared.
+const _mc = new THREE.Color(), _mm = new THREE.Matrix4(), _mq = new THREE.Quaternion(), _me = new THREE.Euler(), _mv = new THREE.Vector3(), _ms = new THREE.Vector3(1, 1, 1);
+// part(geo, colour, [x,y,z], [rx,ry,rz], shade?): a moved copy of geo tinted with colour (times its own
+// vertex colour if it has one). shade(x, y, z) -> brightness multiplier, evaluated after the move.
+function part(geo, color, pos, rot, shade) {
+  const g = geo.clone();
+  _me.set(rot ? rot[0] : 0, rot ? rot[1] : 0, rot ? rot[2] : 0); _mq.setFromEuler(_me);
+  g.applyMatrix4(_mm.compose(_mv.set(pos ? pos[0] : 0, pos ? pos[1] : 0, pos ? pos[2] : 0), _mq, _ms));
+  const P = g.attributes.position, n = P.count, old = g.attributes.color, col = new Float32Array(n * 3);
+  if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+  _mc.set(color);
+  for (let i = 0; i < n; i++) {
+    const k = shade ? shade(P.getX(i), P.getY(i), P.getZ(i)) : 1;
+    col[i * 3] = _mc.r * k * (old ? old.getX(i) : 1); col[i * 3 + 1] = _mc.g * k * (old ? old.getY(i) : 1); col[i * 3 + 2] = _mc.b * k * (old ? old.getZ(i) : 1);
   }
-  const mat = new THREE.MeshStandardMaterial({ map: stripeTex(o.color, o.kind === 'container'), roughness: 0.7, metalness: 0.15 });
-  const box = new THREE.Mesh(new THREE.BoxGeometry(o.w, o.h, o.d), mat);
-  box.position.set(o.x, o.h / 2, o.z); box.castShadow = box.receiveShadow = true; scene.add(box);
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
 }
+// Merge parts into one geometry (mixing indexed and non-indexed parts is allowed).
+function mergeParts(parts) {
+  const mixed = parts.some(p => p.index) && parts.some(p => !p.index);
+  const list = mixed ? parts.map(p => p.index ? p.toNonIndexed() : p) : parts;
+  for (const p of list) for (const k of Object.keys(p.attributes)) if (!['position', 'normal', 'uv', 'color'].includes(k)) p.deleteAttribute(k);
+  return mergeGeometries(list);
+}
+const shadeOf = (hex, k) => '#' + new THREE.Color(hex).multiplyScalar(k).getHexString();
+const rbox = (w, h, d, r = 0.05, seg = 1) => new RoundedBoxGeometry(w, h, d, seg, Math.min(r, w / 2.01, h / 2.01, d / 2.01));
+
+// Corrugated sheet in the XY plane facing +Z: x in [-len/2, len/2], y in [0, h], ridges at z = 0, valleys at z = -depth.
+// Slope normals are softened toward +Z so distant walls don't shimmer with hard light/dark stripes.
+function corrugated(len, h, depth, pitch) {
+  const n = Math.max(1, Math.round(len / pitch)), p = len / n, prof = [];
+  for (let i = 0; i < n; i++) { const x = -len / 2 + i * p; prof.push([x, 0], [x + 0.3 * p, 0], [x + 0.42 * p, -depth], [x + 0.88 * p, -depth]); }
+  prof.push([len / 2, 0]);
+  const pos = [], nor = [], uv = [], idx = [];
+  for (let i = 0; i < prof.length - 1; i++) {
+    const [ax, az] = prof[i], [bx, bz] = prof[i + 1], sx = -(bz - az) * 0.55, sz = bx - ax, L = Math.hypot(sx, sz), nx = sx / L, nz = sz / L, b = pos.length / 3;
+    pos.push(ax, 0, az, bx, 0, bz, bx, h, bz, ax, h, az);
+    for (let k = 0; k < 4; k++) nor.push(nx, 0, nz);
+    const u0 = ax / len + 0.5, u1 = bx / len + 0.5; uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
+    idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+  return g;
+}
+
+// Surface of revolution around Y. prof: [[r, y, tread]], traced with the outside on the right-hand side
+// (normal = (dy, -dr)); repeat a point to get a hard edge. closed: also join the last point to the first.
+// tread: { blocks, gap (fraction of a block), depth, stagger }: tread points (tread = 1 lower half, 2 upper half)
+// sink by depth inside the grooves; stagger offsets the upper half's grooves by half a block.
+// shadeFn(j, grooved) -> brightness of profile point j.
+function latheGeo(prof, segs, closed, tread, shadeFn) {
+  const rings = [];
+  if (!tread) for (let i = 0; i <= segs; i++) rings.push({ a: i / segs * TAU, g: 0 });
+  else {
+    const step = TAU / tread.blocks, w = tread.gap * step, h = step / 2;
+    for (let b = 0; b < tread.blocks; b++) {
+      const a = b * step;
+      const iv = tread.stagger ? [[a, a + w, 1], [a + w, a + h, 0], [a + h, a + h + w, 2], [a + h + w, a + step, 0]] : [[a, a + w, 3], [a + w, a + step, 0]];
+      for (const [s, e, g] of iv) rings.push({ a: s, g }, { a: e, g });
+    }
+    rings.push({ a: TAU, g: tread.stagger ? 1 : 3 });
+  }
+  const pts = closed ? prof.concat([prof[0]]) : prof, np = pts.length;
+  const pn = pts.map((p, j) => { // smooth 2D normal from the neighbouring segments (zero-length segments ignored)
+    let nr = 0, ny = 0;
+    for (const [a, b] of [[pts[j - 1] || (closed ? pts[np - 2] : null), p], [p, pts[j + 1] || (closed ? pts[1] : null)]]) {
+      if (!a || !b) continue; const dr = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dr, dy); if (L < 1e-6) continue; nr += dy / L; ny += -dr / L;
+    }
+    const L = Math.hypot(nr, ny) || 1; return [nr / L, ny / L];
+  });
+  const pos = [], nor = [], uv = [], col = [], idx = [];
+  rings.forEach((R, i) => {
+    const c = Math.cos(R.a), s = Math.sin(R.a);
+    pts.forEach((p, j) => {
+      const grooved = !!(tread && p[2] && (p[2] === R.g || R.g === 3)), r = p[0] - (grooved ? tread.depth : 0), k = shadeFn ? shadeFn(j, grooved) : 1;
+      pos.push(r * c, p[1], r * s); nor.push(pn[j][0] * c, pn[j][1], pn[j][0] * s); uv.push(R.a / TAU, j / (np - 1)); col.push(k, k, k);
+    });
+    if (i < rings.length - 1) for (let j = 0; j < np - 1; j++) {
+      const a = i * np + j, b = a + np;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx);
+  return g;
+}
+// A tyre lying flat (axis Y) centred on the origin: rounded shoulders, sidewalls, bead, staggered tread blocks.
+function tyreGeo(R, ri, hw, blocks, stagger) {
+  const sh = Math.min(hw * 0.5, (R - ri) * 0.35), prof = [[ri, -hw * 0.78], [ri + (R - ri) * 0.2, -hw * 0.97], [R - sh, -hw]];
+  for (let k = 1; k < 4; k++) { const a = -Math.PI / 2 + k / 4 * Math.PI / 2; prof.push([R - sh + sh * Math.cos(a), -hw + sh + sh * Math.sin(a), k === 3 ? 1 : 0]); }
+  prof.push([R, -hw + sh, 1], [R, -hw * 0.5, 1], [R, -hw * 0.12, 1], [R, hw * 0.12, 2], [R, hw * 0.5, 2], [R, hw - sh, 2]);
+  for (let k = 1; k < 4; k++) { const a = k / 4 * Math.PI / 2; prof.push([R - sh + sh * Math.cos(a), hw - sh + sh * Math.sin(a), k === 1 ? 2 : 0]); }
+  prof.push([R - sh, hw], [ri + (R - ri) * 0.2, hw * 0.97], [ri, hw * 0.78], [ri, hw * 0.78], [ri, -hw * 0.78]);
+  return latheGeo(prof, 0, true, { blocks, gap: 0.32, depth: Math.min(0.14, R * 0.07), stagger },
+    (j, grooved) => grooved ? 0.45 : (prof[j] && prof[j][2] ? 0.95 : 1.12));
+}
+// A steel wheel rim (axis Y) that fills a tyre's bore: dished face with a hub, both sides.
+function rimGeo(rr, hh, segs) {
+  const top = [[0, hh * 0.32], [rr * 0.2, hh * 0.32], [rr * 0.26, hh * 0.12], [rr * 0.72, hh * 0.08], [rr * 0.86, hh * 0.55], [rr, hh * 0.72]];
+  const prof = top.map(([r, y]) => [r, -y]).concat(top.slice().reverse());
+  return latheGeo(prof, segs, false, null, j => j === 0 || j === prof.length - 1 || j === 1 || j === prof.length - 2 ? 0.7 : 1);
+}
+
+// Shipping container, long axis X (L), width Z (W), height H; exactly fills the box.
+function containerGeo(L, W, H, color) {
+  const frame = shadeOf(color, 0.72), cast = '#30333B', steel = '#AEB4BD', post = 0.3, rail = 0.26, cs = 0.36;
+  const grime = (x, y) => 0.6 + 0.4 * Math.min(1, y / (H * 0.6));
+  const P = [], wallH = H - 2 * rail + 0.04;
+  // corrugated side walls and the closed end
+  for (const s of [-1, 1]) P.push(part(corrugated(L - 2 * post, wallH, 0.11, 0.66), color, [0, rail - 0.02, s * (W / 2 - 0.05)], [0, s > 0 ? 0 : Math.PI, 0], grime));
+  P.push(part(corrugated(W - 2 * post, wallH, 0.1, 0.66), color, [-(L / 2 - 0.05), rail - 0.02, 0], [0, -Math.PI / 2, 0], grime));
+  // roof (transverse corrugation), slightly below the top rails
+  P.push(part(corrugated(L - 0.2, W - 0.2, 0.05, 0.75), shadeOf(color, 0.92), [0, H - 0.04, (W - 0.2) / 2], [-Math.PI / 2, 0, 0]));
+  // door end: two leaves, seam, four locking bars with cams and handles, hinges
+  const leaf = (W - 2 * post) / 2 - 0.02, dx = L / 2 - 0.17;
+  for (const s of [-1, 1]) {
+    P.push(part(corrugated(leaf, wallH, 0.05, 0.42), color, [dx, rail - 0.02, s * (leaf / 2 + 0.02)], [0, Math.PI / 2, 0], grime));
+    for (const f of [0.22, 0.72]) {
+      const z = s * (0.02 + leaf * f);
+      P.push(part(new THREE.CylinderGeometry(0.045, 0.045, wallH - 0.06, 6), steel, [L / 2 - 0.1, H / 2, z]));
+      for (const y of [rail + 0.08, H - rail - 0.08]) P.push(part(new THREE.BoxGeometry(0.12, 0.12, 0.16), steel, [L / 2 - 0.09, y, z]));
+      P.push(part(new THREE.BoxGeometry(0.07, 0.07, 0.42), steel, [L / 2 - 0.06, H * 0.45, z + s * 0.2]));
+    }
+    for (const y of [0.22, 0.5, 0.78]) P.push(part(new THREE.BoxGeometry(0.1, 0.18, 0.12), cast, [L / 2 - 0.08, rail + (H - 2 * rail) * y, s * (W / 2 - post - 0.05)]));
+  }
+  P.push(part(new THREE.BoxGeometry(0.06, wallH, 0.05), cast, [L / 2 - 0.15, H / 2, 0]));
+  // top and bottom rails all round, corner posts, corner castings
+  for (const y of [rail / 2, H - rail / 2]) {
+    for (const s of [-1, 1]) {
+      P.push(part(rbox(L - 2 * cs + 0.04, rail, 0.2, 0.05), frame, [0, y, s * (W / 2 - 0.1)]));
+      P.push(part(rbox(0.2, rail, W - 2 * cs + 0.04, 0.05), frame, [s * (L / 2 - 0.1), y, 0]));
+    }
+  }
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    P.push(part(rbox(post, H - 2 * 0.28 + 0.04, post, 0.06), frame, [sx * (L / 2 - post / 2 - 0.01), H / 2, sz * (W / 2 - post / 2 - 0.01)]));
+    for (const y of [0.14, H - 0.14]) P.push(part(new THREE.BoxGeometry(cs, 0.28, cs), cast, [sx * (L / 2 - cs / 2), y, sz * (W / 2 - cs / 2)]));
+  }
+  return mergeParts(P);
+}
+
+// Wooden crate: frame boards on every edge, recessed planks with gaps, a cross brace on each side and the lid.
+// Boards are built along X and turned, so the wood grain (texture u) runs along each board.
+function crateGeo(Wx, Wz, H, color, seed) {
+  const F = 0.36, T = 0.14, gap = 0.07, P = [];
+  let s = seed * 9301 + 49297; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const plank = () => shadeOf(color, 0.86 + rnd() * 0.22), frameCol = shadeOf(color, 0.78), brace = shadeOf(color, 0.9);
+  const board = (len, th, wd, c, pos, rot, round = true) => P.push(part(round ? rbox(len, th, wd, 0.045, 1) : new THREE.BoxGeometry(len, th, wd), c, pos, rot));
+  P.push(part(new THREE.BoxGeometry(Wx - 0.3, H - 0.3, Wz - 0.3), '#3A2A18', [0, H / 2, 0])); // dark core behind the gaps
+  // frame: 4 posts, 4 bottom and 4 top rails
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) board(H, F, F, frameCol, [sx * (Wx / 2 - F / 2), H / 2, sz * (Wz / 2 - F / 2)], [0, 0, Math.PI / 2]);
+  for (const y of [F / 2, H - F / 2]) for (const sg of [-1, 1]) {
+    board(Wx - 2 * F + 0.02, F, F, frameCol, [0, y, sg * (Wz / 2 - F / 2)]);
+    board(Wz - 2 * F + 0.02, F, F, frameCol, [sg * (Wx / 2 - F / 2), y, 0], [0, Math.PI / 2, 0]);
+  }
+  // side planks + diagonal brace on each face
+  const n = 3, inner = H - 2 * F, ph = (inner - (n - 1) * gap) / n;
+  for (const [axis, len, half] of [['z', Wx, Wz / 2], ['x', Wz, Wx / 2]]) for (const sg of [-1, 1]) {
+    const ry = axis === 'z' ? 0 : Math.PI / 2, at = (o, y) => axis === 'z' ? [o, y, sg * (half - 0.1 - T / 2)] : [sg * (half - 0.1 - T / 2), y, o];
+    for (let i = 0; i < n; i++) board(len - 2 * F + 0.02, ph, T, plank(), at(0, F + ph / 2 + i * (ph + gap)), [0, ry, 0], false);
+    const bw = len - 2 * F, ang = Math.atan2(inner, bw) * (sg > 0 ? 1 : -1), atB = axis === 'z' ? [0, H / 2, sg * (half - 0.04 - T / 2)] : [sg * (half - 0.04 - T / 2), H / 2, 0];
+    P.push(part(rbox(Math.hypot(bw, inner) - 0.25, F * 0.8, T, 0.045), brace, atB, axis === 'z' ? [0, 0, ang] : [0, Math.PI / 2, ang]));
+  }
+  // lid planks + one diagonal brace
+  const m = 5, lw = (Wz - 2 * F - (m - 1) * gap) / m;
+  for (let i = 0; i < m; i++) board(Wx - 2 * F + 0.02, T, lw, plank(), [0, H - 0.1 - T / 2, -Wz / 2 + F + lw / 2 + i * (lw + gap)], null, false);
+  P.push(part(rbox(Math.hypot(Wx - 2 * F, Wz - 2 * F) - 0.3, T, F * 0.8, 0.045), brace, [0, H - 0.03 - T / 2, 0], [0, Math.atan2(Wz - 2 * F, Wx - 2 * F), 0]));
+  return mergeParts(P);
+}
+const woodTex = canvasTex(512, 128, (g, w, h) => {
+  g.fillStyle = '#E9DCC4'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 70; i++) { // long grain streaks
+    const y = Math.random() * h; g.strokeStyle = `rgba(90,60,30,${0.05 + Math.random() * 0.12})`; g.lineWidth = 0.6 + Math.random() * 1.8;
+    g.beginPath(); g.moveTo(0, y); for (let x = 0; x <= w; x += 32) g.lineTo(x, y + Math.sin(x * 0.02 + i) * 2.5); g.stroke();
+  }
+  for (let i = 0; i < 3; i++) { // knots
+    const x = Math.random() * w, y = Math.random() * h; g.fillStyle = 'rgba(95,60,28,.35)';
+    g.beginPath(); g.ellipse(x, y, 7 + Math.random() * 5, 3 + Math.random() * 2, 0, 0, TAU); g.fill();
+  }
+});
+woodTex.wrapS = woodTex.wrapT = THREE.RepeatWrapping;
+
+// Tyre stack: three tyres with steel rims, filling the r x r x H footprint.
+function tyreStackGeo(R, H, color, seed) {
+  const th = H / 3, P = [], tyre = tyreGeo(R, R * 0.56, th / 2 - 0.01, 15, false), rim = rimGeo(R * 0.57, th * 0.36, 16);
+  for (let i = 0; i < 3; i++) {
+    const ry = seed * 1.7 + i * 2.1;
+    P.push(part(tyre, color, [0, th / 2 + i * th, 0], [0, ry, 0]));
+    P.push(part(rim, i === 1 ? '#C9A227' : '#9EA4AD', [0, th / 2 + i * th, 0], [0, ry, 0]));
+  }
+  return mergeParts(P);
+}
+
+// Shared materials: vertex coloured, so one material (and one draw call) covers each obstacle kind.
+const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.35 });
+const crateMat = new THREE.MeshStandardMaterial({ map: woodTex, vertexColors: true, roughness: 0.85, metalness: 0 });
+const tyreMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.15 });
+(function buildObstacles() {
+  const lists = { container: [], crate: [], tires: [] };
+  OBST.forEach((o, i) => {
+    const long = o.d > o.w, L = long ? o.d : o.w, W = long ? o.w : o.d;
+    // long ones turn to follow Z; square ones get varied facings (container doors point different ways)
+    const ry = long ? (i % 2 ? 1 : -1) * Math.PI / 2 : (o.w === o.d ? (i % 4) * Math.PI / 2 : 0);
+    const M = new THREE.Matrix4().makeRotationY(ry).setPosition(o.x, 0, o.z);
+    const geo = o.kind === 'container' ? containerGeo(L, W, o.h, o.color) : o.kind === 'crate' ? crateGeo(L, W, o.h, o.color, i) : tyreStackGeo(Math.min(o.w, o.d) / 2, o.h, o.color, i);
+    geo.applyMatrix4(M); (lists[o.kind] || lists.container).push(geo);
+  });
+  for (const [kind, mat] of [['container', paintMat], ['crate', crateMat], ['tires', tyreMat]]) {
+    if (!lists[kind].length) continue;
+    const m = new THREE.Mesh(mergeParts(lists[kind]), mat); m.castShadow = m.receiveShadow = true; m.name = 'obstacles-' + kind; scene.add(m);
+  }
+})();
 
 /* ---------- item boxes ---------- */
 // (render pipeline owns the item box look: glow and bloom)
@@ -955,9 +1150,21 @@ const boxes = BOX_SPOTS.map(([x, z], i) => {
 }
 
 /* ---------- karts (MODELS) ---------- */
-// Recolour a kart view (remote players can change colour). Models may replace the body.
-function recolorKart(v, color) { v.bodyMat.color.set(color); }
-const darkMat = lam('#2B2F3A');
+// Each kart view starts as a procedural kart (always available), then swaps in a Kenney Car Kit kart
+// (CC0, assets/car-kit) once that model has loaded. Geometry is shared between karts; each kart owns
+// only its body material (player colour, star glow) and its name tag.
+const KART_DIR = 'assets/car-kit/', KART_VARIANTS = ['oobi', 'oodi', 'ooli', 'oopi', 'oozi'];
+// Kenney karts are ~1 x 1.4 units: scale to the old footprint (about 2.5 wide; stretched a little in length)
+const KART_SCALE = new THREE.Vector3(2.6, 2.6, 2.95), KART_Z = -0.25;
+// colormap.png is a 16 x 4 grid of gradient swatches. The kart chassis uses swatch (11, 2) and the helmet
+// (13, 2); their neighbours (10, 2) and (12, 2) are repainted too so mipmaps don't bleed in other colours.
+const KART_SWATCHES = [[10, 2], [11, 2], [12, 2], [13, 2]];
+
+// Recolour a kart view (remote players can change colour).
+function recolorKart(v, color) {
+  v.color = color;
+  if (v.kenney) v.bodyMat.map = kartTex(color); else v.bodyMat.color.set(color);
+}
 function nameSprite(text) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
   const g = cv.getContext('2d');
@@ -965,40 +1172,155 @@ function nameSprite(text) {
   g.lineWidth = 7; g.strokeStyle = '#23304A'; g.strokeText(text, 128, 34); g.fillStyle = '#FFF4DC'; g.fillText(text, 128, 34);
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
-  sp.scale.set(6.4, 1.6, 1); sp.position.y = 4; sp.renderOrder = 10; return sp;
+  sp.scale.set(6.4, 1.6, 1); sp.position.y = 4.7; sp.renderOrder = 10; return sp;
 }
+
+// --- shared power-up meshes (spike ring, ice block, shield bubble), sized for the new karts
+const spikeGeo = (() => {
+  const P = [part(new THREE.TorusGeometry(2.5, 0.16, 8, 40), '#FFFFFF', null, [Math.PI / 2, 0, 0])];
+  for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; P.push(part(new THREE.ConeGeometry(0.36, 1.25, 10), '#FFFFFF', [Math.cos(a) * 3.05, 0, Math.sin(a) * 3.05], [0, -a, -Math.PI / 2])); }
+  return mergeParts(P);
+})();
+const spikeMat = new THREE.MeshStandardMaterial({ color: '#D5DAE3', roughness: 0.3, metalness: 0.7 });
+const iceGeo = rbox(3.4, 3.9, 4.9, 0.45, 2);
+const iceMat = new THREE.MeshStandardMaterial({ color: '#BFEFFF', transparent: true, opacity: 0.55, roughness: 0.1, metalness: 0 });
+const shieldGeo = new THREE.SphereGeometry(3.05, 24, 16);
+const shieldMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: 0.2, depthWrite: false });
+
+// --- procedural kart (built once): player-colour shell, trim, one shared wheel (tyre + rim)
+const kartTrimMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.2 });
+let procKart = null;
+function procKartGeo() {
+  if (procKart) return procKart;
+  const W = '#FFFFFF', dark = '#2B2F3A', seat = '#1D2129', steel = '#B9BEC6', suit = '#ECE8E0', glove = '#2B2F3A';
+  const body = [
+    part(rbox(1.9, 0.5, 2.3, 0.22, 3), W, [0, 0.8, -0.15]),                 // tub
+    part(rbox(1.3, 0.42, 1.45, 0.2, 3), W, [0, 0.68, 1.5], [0.08, 0, 0]),   // nose
+    part(rbox(0.42, 0.42, 1.7, 0.18, 2), W, [-1.0, 0.64, 0.15]), part(rbox(0.42, 0.42, 1.7, 0.18, 2), W, [1.0, 0.64, 0.15]), // side pods
+    part(rbox(2.4, 0.1, 0.62, 0.05), W, [0, 1.82, -1.85]),                  // rear wing
+    part(new THREE.SphereGeometry(0.56, 22, 16), W, [0, 2.42, -0.45]),      // helmet
+  ];
+  const trim = [
+    part(rbox(2.1, 0.18, 3.9, 0.08), dark, [0, 0.42, 0.15]),                // floor pan
+    part(rbox(2.4, 0.26, 0.32, 0.12, 2), dark, [0, 0.5, 2.3]),             // front bumper
+    part(rbox(2.5, 0.28, 0.34, 0.12, 2), dark, [0, 0.55, -2.0]),           // rear bumper
+    part(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 8), steel, [-1.33, 0.55, 0.05], [Math.PI / 2, 0, 0]),
+    part(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 8), steel, [1.33, 0.55, 0.05], [Math.PI / 2, 0, 0]), // nerf bars
+    part(rbox(1.0, 0.55, 0.7, 0.1), '#3A3F4D', [0, 1.02, -1.4]),          // engine
+    part(new THREE.CylinderGeometry(0.09, 0.07, 0.75, 10), steel, [-0.32, 1.32, -1.78], [-0.9, 0, 0]),
+    part(new THREE.CylinderGeometry(0.09, 0.07, 0.75, 10), steel, [0.32, 1.32, -1.78], [-0.9, 0, 0]), // exhausts
+    part(rbox(0.1, 0.5, 0.14, 0.03), dark, [-0.55, 1.52, -1.82]), part(rbox(0.1, 0.5, 0.14, 0.03), dark, [0.55, 1.52, -1.82]), // wing struts
+    part(rbox(0.08, 0.44, 0.66, 0.03), dark, [-1.22, 1.72, -1.85]), part(rbox(0.08, 0.44, 0.66, 0.03), dark, [1.22, 1.72, -1.85]), // end plates
+    part(rbox(1.0, 0.24, 0.9, 0.1), seat, [0, 1.1, -0.5]),                  // seat
+    part(rbox(1.0, 0.95, 0.2, 0.09), seat, [0, 1.58, -1.0], [-0.18, 0, 0]),
+    part(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 8), dark, [0, 1.36, 0.69], [-0.9, 0, 0]),  // steering column
+    part(new THREE.TorusGeometry(0.3, 0.055, 8, 22), seat, [0, 1.56, 0.5], [-0.6, 0, 0]),       // steering wheel
+    part(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 10), '#E8553E', [0, 1.56, 0.5], [Math.PI / 2 - 0.6, 0, 0]),
+    part(new THREE.CapsuleGeometry(0.42, 0.42, 4, 12), suit, [0, 1.68, -0.5], [0.15, 0, 0]),  // driver torso
+    part(new THREE.CapsuleGeometry(0.13, 0.62, 3, 8), suit, [-0.36, 1.74, 0.02], [-1.25, 0, 0.12]),
+    part(new THREE.CapsuleGeometry(0.13, 0.62, 3, 8), suit, [0.36, 1.74, 0.02], [-1.25, 0, -0.12]), // arms
+    part(new THREE.SphereGeometry(0.14, 10, 8), glove, [-0.27, 1.6, 0.44]), part(new THREE.SphereGeometry(0.14, 10, 8), glove, [0.27, 1.6, 0.44]),
+    part(new THREE.CylinderGeometry(0.18, 0.2, 0.25, 10), dark, [0, 2.0, -0.47]),               // neck
+    part(new THREE.SphereGeometry(0.585, 22, 10, Math.PI / 2 - 0.95, 1.9, 1.08, 0.72), '#141A26', [0, 2.42, -0.45]), // visor
+    part(new THREE.TorusGeometry(0.57, 0.06, 6, 28, Math.PI), '#F5F1E6', [0, 2.42, -0.45], [0, Math.PI / 2, 0]),     // helmet stripe
+  ];
+  const tyre = tyreGeo(0.6, 0.36, 0.27, 14, true), rim = rimGeo(0.37, 0.25, 18);
+  const wheel = mergeParts([part(tyre, '#2A2C33', null, [0, 0, Math.PI / 2]), part(rim, '#D9DCE2', null, [0, 0, Math.PI / 2])]);
+  procKart = { body: mergeParts(body), trim: mergeParts(trim), wheel, wheelAt: [[-1.25, 0.6, 1.25], [1.25, 0.6, 1.25], [-1.25, 0.6, -1.15], [1.25, 0.6, -1.15]] };
+  return procKart;
+}
+function proceduralKart(color) {
+  const G = procKartGeo(), root = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.38, metalness: 0.15 });
+  for (const [geo, mat] of [[G.body, bodyMat], [G.trim, kartTrimMat]]) { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; root.add(m); }
+  const wheels = G.wheelAt.map(([x, y, z]) => { const m = new THREE.Mesh(G.wheel, tyreMat); m.position.set(x, y, z); m.castShadow = true; root.add(m); return m; });
+  return { root, bodyMat, wheels, kenney: false };
+}
+
+// --- Kenney karts: loaded once per variant, geometry shared by every kart of that variant
+const kartModels = new Map();  // variant -> Promise<{ body, wheels: [{ geo, pos }] } | null>
+let kartLoader = null, kartPalette = null, kenneyWheelMat = null;
+function loadKartModel(name) {
+  if (!kartModels.has(name)) kartModels.set(name, (async () => {
+    if (location.protocol === 'file:') return null; // no fetch from file://: keep the procedural kart
+    kartLoader = kartLoader || new GLTFLoader();
+    const gltf = await kartLoader.loadAsync(KART_DIR + 'kart-' + name + '.glb');
+    gltf.scene.updateMatrixWorld(true);
+    const parts = [], wheels = [];
+    gltf.scene.traverse(o => {
+      if (!o.isMesh) return;
+      if (!kartPalette && o.material.map) { kartPalette = o.material.map; kenneyWheelMat = new THREE.MeshStandardMaterial({ map: kartPalette, roughness: 0.75, metalness: 0 }); }
+      if (/^wheel/i.test(o.name)) wheels.push({ geo: o.geometry, pos: o.getWorldPosition(new THREE.Vector3()) });
+      else parts.push(o.geometry.clone().applyMatrix4(o.matrixWorld)); // chassis + driver, merged
+    });
+    if (!kartPalette || wheels.length !== 4 || !parts.length) throw new Error('unexpected kart model ' + name);
+    return { body: mergeParts(parts), wheels };
+  })().catch(e => { console.info('Kenney kart unavailable, using the built-in kart:', e.message); return null; }));
+  return kartModels.get(name);
+}
+// The colour palette with the chassis + helmet swatches repainted in one player colour (cached per colour).
+// Each pixel keeps its swatch's light-to-dark gradient: new = colour * (pixel luminance / swatch mean), in linear light.
+const kartTexCache = new Map();
+const toLin = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+const toSrgb = c => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+function kartTex(color) {
+  let tex = kartTexCache.get(color);
+  if (tex) return tex;
+  const img = kartPalette.image, W = img.width, H = img.height, cw = W / 16, ch = H / 4;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+  const c = new THREE.Color(color); // linear
+  for (const [cx, cy] of KART_SWATCHES) {
+    const d = g.getImageData(cx * cw, cy * ch, cw, ch), px = d.data, n = px.length / 4, lum = new Float32Array(n);
+    let mean = 0;
+    for (let i = 0; i < n; i++) { lum[i] = 0.2126 * toLin(px[i * 4] / 255) + 0.7152 * toLin(px[i * 4 + 1] / 255) + 0.0722 * toLin(px[i * 4 + 2] / 255); mean += lum[i] / n; }
+    for (let i = 0; i < n; i++) {
+      const k = lum[i] / (mean || 1);
+      px[i * 4] = Math.round(toSrgb(Math.min(1, c.r * k)) * 255); px[i * 4 + 1] = Math.round(toSrgb(Math.min(1, c.g * k)) * 255); px[i * 4 + 2] = Math.round(toSrgb(Math.min(1, c.b * k)) * 255);
+    }
+    g.putImageData(d, cx * cw, cy * ch);
+  }
+  tex = new THREE.CanvasTexture(cv);
+  for (const k of ['flipY', 'colorSpace', 'wrapS', 'wrapT', 'magFilter', 'minFilter', 'anisotropy']) tex[k] = kartPalette[k];
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = Math.max(tex.anisotropy, 4);
+  kartTexCache.set(color, tex);
+  return tex;
+}
+function kenneyKart(m, color) {
+  const root = new THREE.Group(); root.scale.copy(KART_SCALE); root.position.z = KART_Z;
+  const bodyMat = new THREE.MeshStandardMaterial({ map: kartTex(color), roughness: 0.5, metalness: 0.05 });
+  const body = new THREE.Mesh(m.body, bodyMat); body.castShadow = body.receiveShadow = true; root.add(body);
+  // each wheel spins inside a pivot that cancels the length stretch, so it stays round
+  const wheels = m.wheels.map(w => {
+    const pivot = new THREE.Group(); pivot.position.copy(w.pos); pivot.scale.set(1, 1, KART_SCALE.y / KART_SCALE.z); root.add(pivot);
+    const o = new THREE.Mesh(w.geo, kenneyWheelMat); o.castShadow = true; pivot.add(o); return o;
+  });
+  return { root, bodyMat, wheels, kenney: true };
+}
+// Put a model (procedural or Kenney) into a kart view, replacing the previous one.
+function setKartModel(v, m) {
+  if (v.model) { v.g.remove(v.model.root); v.model.bodyMat.dispose(); }
+  v.model = m; v.kenney = m.kenney; v.bodyMat = m.bodyMat; v.wheels = m.wheels; v.g.add(m.root);
+}
+
 function buildKart(color) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 });
-  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
-  add(new THREE.BoxGeometry(2.2, 0.7, 3.2), bodyMat, 0, 0.75, 0);
-  add(new THREE.BoxGeometry(1.8, 0.45, 0.9), bodyMat, 0, 0.62, 1.9);
-  add(new THREE.BoxGeometry(2.5, 0.35, 0.4), darkMat, 0, 0.5, 2.4);
-  add(new THREE.BoxGeometry(1.2, 0.9, 0.4), darkMat, 0, 1.4, -0.75);
-  add(new THREE.CylinderGeometry(0.45, 0.55, 0.8, 10), lam('#F5F1E6'), 0, 1.6, -0.25);
-  add(new THREE.SphereGeometry(0.6, 16, 12), bodyMat, 0, 2.3, -0.2);
-  add(new THREE.BoxGeometry(0.8, 0.28, 0.2), lam('#1C2230'), 0, 2.3, 0.33);
-  add(new THREE.BoxGeometry(2.5, 0.14, 0.7), bodyMat, 0, 1.55, -1.7);
-  add(new THREE.BoxGeometry(0.15, 0.6, 0.15), darkMat, -0.8, 1.2, -1.6);
-  add(new THREE.BoxGeometry(0.15, 0.6, 0.15), darkMat, 0.8, 1.2, -1.6);
-  const wheelGeo = new THREE.CylinderGeometry(0.58, 0.58, 0.55, 14); wheelGeo.rotateZ(Math.PI / 2);
-  const wheels = [[-1.3, 1.15], [1.3, 1.15], [-1.3, -1.1], [1.3, -1.1]].map(([x, z]) => add(wheelGeo, darkMat, x, 0.58, z));
-  // spike ring
-  const spikes = new THREE.Group();
-  const spikeMat = lam('#C9CED8');
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.18, 8, 32), spikeMat); ring.rotation.x = Math.PI / 2; spikes.add(ring);
-  for (let i = 0; i < 8; i++) {
-    const a = i / 8 * TAU, c = new THREE.Mesh(new THREE.ConeGeometry(0.38, 1.3, 8), spikeMat);
-    c.position.set(Math.cos(a) * 2.9, 0, Math.sin(a) * 2.9); c.rotation.z = -Math.PI / 2; c.rotation.y = -a; spikes.add(c);
-  }
-  spikes.position.y = 0.9; spikes.visible = false; g.add(spikes);
-  const ice = new THREE.Mesh(new THREE.BoxGeometry(3.4, 3, 4.4), new THREE.MeshStandardMaterial({ color: '#BFEFFF', transparent: true, opacity: .6, roughness: 0.15 }));
-  ice.position.y = 1.4; ice.visible = false; g.add(ice);
-  const shield = new THREE.Mesh(new THREE.SphereGeometry(2.8, 20, 14), new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: .2, depthWrite: false }));
-  shield.position.y = 1.2; shield.renderOrder = 2; shield.visible = false; g.add(shield);
-  return { g, bodyMat, wheels, spikes, ice, shield, tag: null };
+  const spikes = new THREE.Mesh(spikeGeo, spikeMat); spikes.position.y = 0.9; spikes.visible = false; spikes.castShadow = true; g.add(spikes);
+  const ice = new THREE.Mesh(iceGeo, iceMat); ice.position.y = 1.9; ice.visible = false; g.add(ice);
+  const shield = new THREE.Mesh(shieldGeo, shieldMat); shield.position.y = 1.6; shield.renderOrder = 2; shield.visible = false; g.add(shield);
+  const v = { g, bodyMat: null, wheels: null, spikes, ice, shield, tag: null, color, model: null, kenney: false, disposed: false };
+  v.setColor = c => recolorKart(v, c); // handy for tests (?debug: SK.bots[0].view.setColor('#2F9BD8'))
+  setKartModel(v, proceduralKart(color));
+  // driver variety: the variant follows the colour slot
+  const variant = KART_VARIANTS[Math.max(0, COLORS.indexOf(color)) % KART_VARIANTS.length];
+  loadKartModel(variant).then(m => { if (m && !v.disposed) setKartModel(v, kenneyKart(m, v.color)); });
+  return v;
 }
-function disposeKart(v) { scene.remove(v.g); v.g.traverse(o => { if (o.geometry && o.geometry !== boxGeo) o.geometry.dispose(); }); }
+function disposeKart(v) {
+  v.disposed = true; scene.remove(v.g);
+  if (v.model) v.model.bodyMat.dispose(); // geometry and the other materials are shared
+  if (v.tag) { v.tag.material.map.dispose(); v.tag.material.dispose(); }
+}
 function setTag(v, text) {
   if (v.tag) { v.g.remove(v.tag); v.tag.material.map.dispose(); v.tag.material.dispose(); }
   v.tag = nameSprite(text); v.g.add(v.tag); v.tagText = text;
@@ -1012,7 +1334,9 @@ function styleKart(v, s, t) {
   v.ice.visible = s.frozen;
   v.shield.visible = s.protect && (Math.floor(t * 8) % 2 === 0);
   if (s.star) { v.bodyMat.emissive.setHSL((t * 1.5) % 1, 1, 0.35); } else v.bodyMat.emissive.setRGB(0, 0, 0);
-  const spin = (s.sp || 0) * 0.06; for (const w of v.wheels) w.rotation.x += spin;
+  // wheels roll at the kart's speed (radius ~0.55), whatever the frame rate
+  const dt = Math.min(0.1, Math.max(0, t - (v.lastT === undefined ? t : v.lastT))); v.lastT = t;
+  const spin = (s.sp || 0) * dt / 0.55; for (const w of v.wheels) w.rotation.x = (w.rotation.x + spin) % TAU;
 }
 
 /* =========================================================================
