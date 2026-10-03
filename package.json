@@ -4,7 +4,7 @@
   "private": true,
   "description": "Arena kart brawler with a tiny WebSocket relay",
   "main": "server.js",
-  "scripts": { "start": "node server.js", "test": "node --test test/physics.test.js" },
+  "scripts": { "start": "node server.js", "test": "node test/physics.test.js" },
   "engines": { "node": ">=18" },
   "dependencies": { "ws": "^8.18.0" }
 }
