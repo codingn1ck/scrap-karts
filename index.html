@@ -84,8 +84,8 @@ html[data-q="low"] .card.panel{-webkit-backdrop-filter:none;backdrop-filter:none
 .switch:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .qrow{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:14px;font-weight:500}
 .qrow .seg{flex:none;width:150px}
-#qNote{color:var(--gold)}
-#qNote:empty{display:none}
+#qNote,#qNote2{color:var(--gold)}
+#qNote:empty,#qNote2:empty{display:none}
 #play{position:relative;width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 0 12px;border:0;border-radius:var(--r);
   font:italic 800 26px/1 var(--display);letter-spacing:.04em;text-transform:uppercase;color:#fff;background:var(--hot);cursor:pointer;
   box-shadow:0 8px 22px rgba(255,90,60,.32);transition:transform var(--t) var(--ease),filter var(--t) var(--ease),box-shadow var(--t) var(--ease)}
@@ -95,6 +95,8 @@ html[data-q="low"] .card.panel{-webkit-backdrop-filter:none;backdrop-filter:none
 #play:disabled{cursor:progress;filter:saturate(.75);transform:none}
 #play.busy::before{content:"";width:16px;height:16px;border-radius:50%;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;animation:spin .8s linear infinite}
 #netnote{margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.45}
+#loadnote{margin-top:8px;color:var(--gold)}
+#loadnote[hidden]{display:none}
 .keys{margin-top:14px;font-size:13px;line-height:2;color:rgba(243,245,249,.9);text-shadow:0 1px 6px rgba(0,0,0,.5)}
 .keys .kb{display:flex;flex-wrap:wrap;column-gap:14px}
 .keys .kb > span{white-space:nowrap}
@@ -134,6 +136,8 @@ kbd{display:inline-block;min-width:24px;padding:0 6px;margin:0 1px;font:600 12px
 #setPanel{pointer-events:auto;width:224px;max-width:100%;padding:12px;display:grid;gap:12px;animation:rise var(--t) var(--ease)}
 #setPanel[hidden]{display:none}
 #setPanel .lbl{margin-bottom:6px}
+/* grid layouts: the panel floats under the clock instead of growing the top row (which pushed the slot off short screens) */
+@media (min-width:821px){ #setPanel{position:absolute;top:calc(100% + 8px);left:0} }
 #board{grid-area:board;justify-self:end;width:244px;max-width:100%;list-style:none;margin:0;padding:6px}
 #board li,#standings li{display:flex;align-items:center;gap:9px;padding:0 9px;border-radius:var(--r);font-weight:600}
 #board li{height:30px;font-size:14px}
@@ -148,8 +152,8 @@ li.me .sc{color:var(--gold)}
 #feed{grid-area:feed;justify-self:center;width:100%;display:flex;flex-direction:column;align-items:center;gap:5px}
 #feed div{max-width:100%;padding:5px 11px;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:feedIn var(--t) var(--ease)}
 #feed b{font-weight:600;color:var(--text)}
-#feed div.mine{background:var(--hot);border-color:transparent;color:rgba(255,255,255,.88)}
-#feed div.mine b{color:#fff}
+#feed div.mine{background:var(--hot);border-color:transparent;color:var(--bg);font-weight:600}  /* dark text on --hot: ~6:1 (white is only 3.1:1) */
+#feed div.mine b{color:var(--bg);font-weight:700}
 #feed div.sys{font-style:italic}
 #mid{grid-area:mid;align-self:stretch;display:grid;place-items:center;padding-bottom:6vh;min-height:0}
 #center{max-width:100%;padding:14px 26px 15px;text-align:center;opacity:0;transform:scale(.96);transition:opacity var(--t) var(--ease),transform var(--t) var(--ease)}
@@ -203,7 +207,7 @@ li.me .sc{color:var(--gold)}
 #knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:rgba(243,245,249,.96);box-shadow:0 4px 12px rgba(0,0,0,.3)}
 #fireBtn{position:fixed;z-index:3;right:calc(20px + var(--sar));bottom:calc(26px + var(--sab));width:92px;height:92px;border-radius:50%;border:0;padding:0;
   display:none;flex-direction:column;align-items:center;justify-content:center;gap:3px;pointer-events:auto;touch-action:none;cursor:pointer;
-  background:var(--hot);color:#fff;font:italic 800 17px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;
+  background:var(--hot);color:var(--bg);font:italic 800 17px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;
   box-shadow:0 0 0 4px rgba(255,255,255,.2),0 8px 22px rgba(0,0,0,.35);transition:transform 150ms var(--ease),background-color var(--t) var(--ease),color var(--t) var(--ease)}
 #fireBtn svg{width:30px;height:30px;pointer-events:none}
 #fireBtn span{pointer-events:none}
@@ -261,6 +265,41 @@ li.me .sc{color:var(--gold)}
 }
 @media (max-height:760px){ .tagline{display:none} }
 @media (max-height:560px){ .brand h1{font-size:40px} .card{padding:14px} }
+/* short screens: compact results card so the countdown stays on screen (8 standings in two columns) */
+@media (max-height:500px){
+  #results .card{width:min(560px,100%);padding:14px 18px} #results h2{font-size:30px} #results .win{margin-bottom:8px}
+  #standings{grid-template-columns:1fr 1fr;column-gap:6px;margin-bottom:10px} #standings li{height:28px;font-size:14px} #standings .sc{font-size:18px}
+}
+/* phones held sideways and other short landscape windows. HUD: clock | feed | board on top, the centre
+   message right under the feed, weapon slot bottom-left, toast bottom-centre; the middle stays clear for
+   your kart and the bottom-right for the Fire button (so no bottom reserve). Menu: brand left, card right. */
+@media (max-height:500px) and (orientation:landscape){
+  #hud{--pad:10px;gap:6px 12px;grid-template-columns:minmax(0,1fr) minmax(0,360px) minmax(0,1fr);
+    grid-template-rows:auto auto minmax(0,1fr) auto;
+    grid-template-areas:"tl feed board" "tl mid board" ". . board" "slot toast help";padding-bottom:calc(10px + var(--sab))}
+  #mid{align-self:start;padding-bottom:0}
+  #center{padding:8px 18px 9px} #bigmsg{font-size:28px} #submsg{margin-top:4px;font-size:14px}
+  #feed div:nth-last-child(n+3){display:none}  /* newest two lines only */
+  #slot{justify-self:start;min-width:0}
+  #toast{align-self:end}
+  #help{justify-self:end}
+  #setPanel{position:absolute;top:calc(100% + 8px);left:0}
+  #tl.setopen #roominfo{display:none}  /* the open settings panel takes the room info's place */
+  #menu{padding:calc(12px + var(--sat)) calc(16px + var(--sar)) calc(12px + var(--sab)) calc(16px + var(--sal))}
+  .menu-inner{width:min(780px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr);grid-template-rows:auto 1fr;column-gap:20px;align-items:start}
+  .brand{grid-column:1;grid-row:1;margin:0}
+  .keys{grid-column:1;grid-row:2;margin-top:12px;line-height:1.6}
+  .keys .kb{row-gap:4px}
+  #menu .card{grid-column:2;grid-row:1 / span 2;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:16px;align-items:start;
+    grid-template-areas:"name room" "color color" "bots q" "play note";padding:12px 14px}
+  .f-name{grid-area:name} .f-room{grid-area:room} .f-color{grid-area:color} #menu .row{grid-area:bots} .qfield{grid-area:q}
+  #menu .field,#menu .row{margin-bottom:10px}
+  .f-room .hint{display:none}
+  .qrow .seg{width:130px}
+  #play{grid-area:play;padding:10px 0 9px;font-size:24px}
+  #netnote{grid-area:note;align-self:center;margin:0}
+  #loadnote{grid-column:1 / -1}
+}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:1ms!important;animation-iteration-count:1!important;transition-duration:1ms!important}
 }
@@ -276,15 +315,15 @@ li.me .sc{color:var(--gold)}
       <p class="tagline">Three-minute kart brawls. Grab a box, fire, get bonked, go again.</p>
     </div>
     <div class="card panel">
-      <div class="field">
+      <div class="field f-name">
         <label class="lbl" for="nameIn">Your name</label>
         <input id="nameIn" type="text" maxlength="14" autocomplete="off" spellcheck="false" placeholder="Driver">
       </div>
-      <div class="field">
+      <div class="field f-color">
         <span class="lbl" id="colorLbl">Kart colour</span>
         <div class="swatches" id="swatches" role="group" aria-labelledby="colorLbl"></div>
       </div>
-      <div class="field">
+      <div class="field f-room">
         <label class="lbl" for="roomIn">Room code</label>
         <input id="roomIn" type="text" maxlength="20" autocomplete="off" spellcheck="false" value="arena">
         <div class="hint">Friends who type the same code land in the same match.</div>
@@ -294,8 +333,9 @@ li.me .sc{color:var(--gold)}
         <div class="qrow"><span id="qLbl">Graphics quality</span><div class="seg qseg" role="group" aria-labelledby="qLbl"><button type="button" data-q="low" aria-pressed="false">Low</button><button type="button" data-q="high" aria-pressed="true">High</button></div></div>
         <div class="hint" id="qNote"></div>
       </div>
-      <button id="play" type="button">Play</button>
-      <div id="netnote">Checking for online play…</div>
+      <button id="play" type="button" class="busy" disabled>Loading…</button>
+      <div id="netnote">Loading the 3D engine…</div>
+      <div id="loadnote" class="hint" role="alert" hidden></div>
     </div>
     <div class="keys"><span class="kb"><span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to drive</span><span><kbd>Space</kbd> to fire</span><span><kbd>M</kbd> to mute</span></span><span class="touch">Drag on the left half to steer, tap Fire to shoot</span></div>
   </div>
@@ -309,7 +349,7 @@ li.me .sc{color:var(--gold)}
     </div>
     <div id="roominfo" class="panel"><span class="ri-a"></span><span class="ri-b"></span></div>
     <div id="setPanel" class="panel" hidden>
-      <div><span class="lbl" id="qLbl2">Graphics</span><div class="seg qseg" role="group" aria-labelledby="qLbl2"><button type="button" data-q="low" aria-pressed="false">Low</button><button type="button" data-q="high" aria-pressed="true">High</button></div></div>
+      <div><span class="lbl" id="qLbl2">Graphics</span><div class="seg qseg" role="group" aria-labelledby="qLbl2"><button type="button" data-q="low" aria-pressed="false">Low</button><button type="button" data-q="high" aria-pressed="true">High</button></div><div class="hint" id="qNote2"></div></div>
       <div><span class="lbl" id="sLbl">Sound</span><div class="seg" id="sndSeg" role="group" aria-labelledby="sLbl"><button type="button" data-snd="on" aria-pressed="true">On</button><button type="button" data-snd="off" aria-pressed="false">Off</button></div></div>
     </div>
   </div>
@@ -336,12 +376,33 @@ li.me .sc{color:var(--gold)}
 </div>
 
 <noscript>Scrap Karts needs JavaScript to run.</noscript>
+<script>
+/* Loading watchdog. A classic script, so it still runs when the three.js modules never arrive.
+   Play stays disabled ("Loading…") until the game module has drawn its first frame (it then sets window.__skReady). */
+(function () {
+  function say(msg, failed) {
+    if (window.__skReady) return;
+    var n = document.getElementById('loadnote'), b = document.getElementById('play');
+    if (n && !n.dataset.failed) { n.textContent = msg; n.hidden = false; if (failed) n.dataset.failed = '1'; }
+    if (failed && b) { b.textContent = 'Can’t load'; b.classList.remove('busy'); document.getElementById('netnote').hidden = true; }
+  }
+  setTimeout(function () { say('The 3D engine (from cdn.jsdelivr.net) is taking a long time to load. If nothing happens, check your connection or try another network, then reload.'); }, 20000);
+  // a module that fails to download fires "error" on its <script> element (it does not bubble, so capture it)
+  document.addEventListener('error', function (e) {
+    var s = e.target; if (s && s.tagName === 'SCRIPT' && s.type === 'module') say('Couldn’t load the 3D engine from cdn.jsdelivr.net. Check your connection or try another network, then reload.', true);
+  }, true);
+  addEventListener('error', function (e) { if (e.error) say('The game couldn’t start in this browser. Try reloading, or use an up-to-date Chrome, Edge, Firefox or Safari.', true); });
+})();
+</script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
 } }
 </script>
+<!-- three.module.js imports three.core.js: fetch both at once instead of one after the other (after the import map, so it still applies) -->
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js" crossorigin>
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.core.js" crossorigin>
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -507,7 +568,7 @@ function onQuality(fn) { QUALITY.listeners.push(fn); fn(QUALITY.level, false); }
 function setQuality(level, auto = false) {
   if (level !== 'low' && level !== 'high') return;
   QUALITY.level = level; QUALITY.auto = auto;
-  if (!auto) { try { localStorage.setItem('scrapkarts.quality', level); } catch (e) {} }
+  try { if (!auto) { localStorage.setItem('scrapkarts.quality', level); localStorage.removeItem('scrapkarts.quality.auto'); } else if (level === 'low' && !localStorage.getItem('scrapkarts.quality') && !localStorage.getItem('scrapkarts.quality.auto')) localStorage.setItem('scrapkarts.quality.auto', String(Date.now())); } catch (e) {} // a manual choice always wins; an auto drop is only a 7-day hint (menu JS)
   for (const f of QUALITY.listeners) f(level, auto);
 }
 /* ---- post-processing: Render -> GTAO (High) -> Bloom -> SMAA -> Output (ACES + sRGB) ----
@@ -2177,8 +2238,13 @@ function pushFeed(a, b, mine, verb) {
   feed.push({ text, mine, until: Date.now() + 4500, el }); hudEl.feed.append(el);
   if (feed.length > 4) feed.shift().el.remove();
 }
-let toastTimer = 0;
-function toast(t) { const el = hudEl.toast; el.textContent = t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 1400); }
+// toast(text, ms, hold): a held toast (the quality notice) is not replaced by ordinary toasts while it shows
+let toastTimer = 0, toastHoldUntil = 0;
+function toast(t, ms = 1400, hold = false) {
+  const now = performance.now(); if (!hold && now < toastHoldUntil) return;
+  const el = hudEl.toast; el.textContent = t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), ms);
+  toastHoldUntil = hold ? now + ms : 0;
+}
 function flashSlot() { const s = hudEl.slot; s.classList.remove('flash'); void s.offsetWidth; s.classList.add('flash'); sfx('pick'); }
 function renderList(el, rows, cls) {
   let sig = cls; for (const e of rows) sig += `|${e.rank}:${e.key}:${e.score}:${e.name}:${e.color}:${e.me ? 1 : 0}`;
@@ -2209,7 +2275,7 @@ function updateHud(now, playing, phaseT) {
   setText(H.riB, online ? `${humans} ${humans === 1 ? 'driver' : 'drivers'}` + (reconnecting ? ' (reconnecting)' : '') : (bots.length ? 'with bots' : ''));
   H.riB.classList.toggle('warn', reconnecting); H.riB.hidden = !H.riB.textContent;
   // board: top 6 plus me (top 4 on small screens)
-  const cap = innerWidth < 640 || innerHeight < 500 ? 4 : 6;
+  const cap = innerWidth < 640 ? 4 : 6; // (short landscape screens have room for 6: the board runs down the right side)
   let rows = st.slice(0, cap); if (!rows.some(e => e.me)) { const m = st.find(e => e.me); if (m) rows = rows.slice(0, cap - 1).concat(m); }
   renderList(H.board, rows, 'board');
   // feed
@@ -2297,16 +2363,28 @@ try { const saved = JSON.parse(localStorage.getItem('scrapkarts') || '{}'); if (
 // Graphics quality: Low/High in the menu and in the in-game settings panel (setQuality/onQuality: render pipeline).
 const qBtns = [...document.querySelectorAll('.qseg [data-q]')];
 for (const b of qBtns) b.addEventListener('click', () => { setQuality(b.dataset.q); if (started) canvas.focus(); });
+// An automatic drop to Low is remembered for 7 days (setQuality stores the hint); any manual choice wins and clears it.
+let qRestored = false;
+try {
+  if (!localStorage.getItem('scrapkarts.quality')) {
+    const at = +localStorage.getItem('scrapkarts.quality.auto') || 0;
+    if (at && Date.now() - at < 7 * 864e5) { if (QUALITY.level === 'high') { qRestored = true; setQuality('low', true); } }
+    else localStorage.removeItem('scrapkarts.quality.auto');
+  }
+} catch (e) {}
 onQuality((level, auto) => {
   document.documentElement.dataset.q = level; // CSS drops the panel blur on Low
   for (const b of qBtns) b.setAttribute('aria-pressed', String(b.dataset.q === level));
-  $('#qNote').textContent = auto && level === 'low' ? 'Switched to Low automatically for smoother play.' : '';
-  if (auto && level === 'low') toast('Switched to Low quality for smoother play');
+  const isAuto = QUALITY.auto && level === 'low';
+  const note = !isAuto ? '' : qRestored && !auto ? 'Low was chosen automatically on your last visit. Pick High to try again.' : 'Switched to Low automatically for smoother play.';
+  $('#qNote').textContent = note; $('#qNote2').textContent = note && 'Low was chosen automatically.';
+  if (auto && level === 'low' && !qRestored) toast('Switched to Low quality for smoother play', 4000, true);
+  if (!isAuto) qRestored = false;
 });
 // In-game settings: a small button next to the clock opens a compact panel (quality + sound).
 const setBtn = $('#setBtn'), setPanel = $('#setPanel');
 function showSettings(open) {
-  setPanel.hidden = !open; setBtn.setAttribute('aria-expanded', String(open));
+  setPanel.hidden = !open; setBtn.setAttribute('aria-expanded', String(open)); $('#tl').classList.toggle('setopen', open);
   setBtn.setAttribute('aria-label', open ? 'Close settings' : 'Settings'); setBtn.innerHTML = open ? UI_ICONS.close : UI_ICONS.settings;
 }
 showSettings(false);
@@ -2338,6 +2416,13 @@ $('#play').addEventListener('click', async () => {
   canvas.focus();
   if (!ok && (roomNs || wsPossible)) toast('Could not reach the room, playing solo');
 });
+// Play is disabled ("Loading…") in the markup; enable it once the first frame has rendered, so the one-off
+// shader-compile stall happens while the menu still says it is loading. (window.__skReady stops the watchdog.)
+(function enablePlayWhenDrawn() {
+  if (!(renderer.info.render.frame > 0)) { requestAnimationFrame(enablePlayWhenDrawn); return; }
+  const btn = $('#play'); btn.disabled = false; btn.classList.remove('busy'); btn.textContent = 'Play';
+  window.__skReady = true; $('#loadnote').hidden = true;
+})();
 
 /* ---------- main loop ---------- */
 let last = performance.now(), sendAt = 0, cleanAt = 0, t0 = performance.now();
