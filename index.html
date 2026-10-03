@@ -289,35 +289,49 @@ const DIRECT = { r: 1, n: 1, g: 1, f: 1 };
    (test/physics.test.js runs that code in Node).
    ========================================================================= */
 const canvas = $('#c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+const renderDebug = /[?&]debug(?:[=&]|$)/.test(location.search);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: false, powerPreference: 'high-performance' });
+renderer.debug.checkShaderErrors = renderDebug; // skip the extra shader-validation round trip outside ?debug
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap; // r186: PCF is soft via shadow.radius (PCFSoftShadowMap was removed)
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // applied once, by OutputPass at the end of the post chain
+renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(58, 1, 0.5, 900);
 camera.position.set(0, 60, 90);
 // image-based lighting from a neutral studio room
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.45;
+{
+  const pmrem = new THREE.PMREMGenerator(renderer), room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose(); pmrem.dispose();
+}
+scene.environmentIntensity = 0.5;
 
 const resizeHooks = []; // fn(w, h) — post-processing registers here
+// Pixel ratio per quality: High uses up to 1.75x but keeps the render under ~2.6 MP (big laptop
+// screens would otherwise pay for 5+ MP of post-processing); Low renders at 1x.
+const MAX_PIXELS_HIGH = 2.6e6;
+function targetPixelRatio(w, h) {
+  const dpr = window.devicePixelRatio || 1;
+  if (QUALITY.level !== 'high') return Math.min(dpr, 1);
+  return Math.max(Math.min(dpr, 1), Math.min(dpr, 1.75, Math.sqrt(MAX_PIXELS_HIGH / Math.max(1, w * h))));
+}
 function resize() {
-  const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false);
+  const w = innerWidth, h = innerHeight;
+  renderer.setPixelRatio(targetPixelRatio(w, h)); renderer.setSize(w, h, false);
   camera.aspect = w / h; camera.fov = camera.aspect < 1 ? 74 : 58; camera.updateProjectionMatrix();
   for (const f of resizeHooks) f(w, h);
 }
 addEventListener('resize', resize);
 
-const hemi = new THREE.HemisphereLight('#E6F4FF', '#6B5A45', 1.1);
+const hemi = new THREE.HemisphereLight('#E3F1FF', '#76624A', 1.05); // cool sky fill, warm bounce from the ground
 scene.add(hemi);
-const sun = new THREE.DirectionalLight('#FFF1D6', 2.6);
+const sun = new THREE.DirectionalLight('#FFEBCC', 2.7);   // warm late-morning sun
 sun.position.set(40, 80, 25); sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -78, right: 78, top: 78, bottom: -78, near: 10, far: 200 });
-sun.shadow.bias = -0.0008; sun.shadow.normalBias = 0.02; sun.shadow.radius = 3;
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.04; sun.shadow.radius = 2.5;
 scene.add(sun);
 
 // Quality: 'high' | 'low'. setQuality() applies it and tells every listener (post-fx, UI).
@@ -330,16 +344,91 @@ function setQuality(level, auto = false) {
   if (!auto) { try { localStorage.setItem('scrapkarts.quality', level); } catch (e) {} }
   for (const f of QUALITY.listeners) f(level, auto);
 }
-onQuality(level => {
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, level === 'high' ? 1.75 : 1));
-  renderer.shadowMap.type = THREE.PCFShadowMap;
-  sun.shadow.radius = level === 'high' ? 3 : 1;
-  const size = level === 'high' ? 2048 : 1024;
-  if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
-  resize();
+/* ---- post-processing: Render -> GTAO (High) -> Bloom -> SMAA -> Output (ACES + sRGB) ----
+   Every intermediate target is HalfFloat, so bloom sees HDR values: only things pushed above
+   BLOOM.threshold (item box glyphs, explosions, tracer rounds, mine lights) glow; sunlit
+   surfaces stay below it. r186's SMAAPass works in linear space, so it runs before OutputPass. */
+const BLOOM = { threshold: 1.6, high: { strength: 0.45, radius: 0.3, scale: 1 }, low: { strength: 0.4, radius: 0.2, scale: 0.5 } };
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }));
+const renderPass = new RenderPass(scene, camera);
+// GTAO (High only): world-space radius sized for karts (~2 units) and containers, at half resolution
+const AO_SCALE = 0.5;
+const gtaoPass = new GTAOPass(scene, camera, 1, 1, undefined,
+  { radius: 2.5, distanceExponent: 1.6, thickness: 3, distanceFallOff: 1, scale: 2, samples: 12 },
+  { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
+gtaoPass.blendIntensity = 1;
+const gtaoSetSize = gtaoPass.setSize.bind(gtaoPass);
+gtaoPass.setSize = (w, h) => gtaoPass.enabled ? gtaoSetSize(Math.max(1, Math.round(w * AO_SCALE)), Math.max(1, Math.round(h * AO_SCALE))) : gtaoSetSize(1, 1);
+// The AO G-buffer only wants solid geometry: hide sprites (name tags) and transparent
+// effects (smoke, explosions, shields, decals) so they don't leave dark halos. The shadow map
+// was already drawn by the main RenderPass this frame, so the G-buffer render skips it.
+const aoHidden = [];
+const aoHide = o => { if (o.visible && (o.isSprite || o.isPoints || o.isLine || (o.material && o.material.transparent))) { o.visible = false; aoHidden.push(o); } };
+gtaoPass._overrideVisibility = () => { scene.traverse(aoHide); renderer.shadowMap.autoUpdate = false; };
+gtaoPass._restoreVisibility = () => { renderer.shadowMap.autoUpdate = true; for (let i = 0; i < aoHidden.length; i++) aoHidden[i].visible = true; aoHidden.length = 0; };
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.high.strength, BLOOM.high.radius, BLOOM.threshold);
+let bloomScale = 1;
+const bloomSetSize = bloomPass.setSize.bind(bloomPass);
+bloomPass.setSize = (w, h) => bloomSetSize(Math.max(2, Math.round(w * bloomScale)), Math.max(2, Math.round(h * bloomScale)));
+const smaaPass = new SMAAPass();
+const outputPass = new OutputPass();
+for (const p of [renderPass, gtaoPass, bloomPass, smaaPass, outputPass]) composer.addPass(p);
+// The composer works in drawing-buffer pixels (whole numbers, exactly the canvas size).
+composer.setPixelRatio(1);
+const drawSize = new THREE.Vector2();
+resizeHooks.push(() => {
+  renderer.getDrawingBufferSize(drawSize);
+  composer.setSize(drawSize.x, drawSize.y); // resizes both HalfFloat targets and every pass (old GPU buffers are freed)
 });
-// Draws one frame. Post-processing replaces the body of this.
-function renderFrame() { renderer.render(scene, camera); }
+
+/* ---- auto quality: drop to Low once if the frame rate stays under 45 fps on High ----
+   Measures the real interval between rendered frames over a rolling 4 s window. Waits a few
+   seconds after load, game start, a quality change or the tab becoming visible again. A single
+   long frame (>250 ms: tab switch, GC, shader compile) is ignored, but back-to-back long frames
+   count (a truly slow device). Never raises quality on its own. */
+const PERF = { minFps: 45, window: 4, warmUntil: 0, last: 0, buckets: new Float32Array(4), frames: new Uint16Array(4), bi: 0, bt: 0, bn: 0, filled: 0, longPrev: false, dropped: false, dropAvg: 0, wasStarted: false, avg: 0, slowMs: 0 };
+function perfReset(warmSec) {
+  PERF.warmUntil = performance.now() + warmSec * 1000; PERF.last = 0;
+  PERF.bt = 0; PERF.bn = 0; PERF.bi = 0; PERF.filled = 0; PERF.longPrev = false; PERF.avg = 0;
+}
+document.addEventListener('visibilitychange', () => perfReset(2));
+function perfSample(now) {
+  if (PERF.wasStarted !== started) { PERF.wasStarted = started; perfReset(3); }
+  if (PERF.dropped || QUALITY.level !== 'high') return;
+  if (document.hidden || now < PERF.warmUntil || !PERF.last) { PERF.last = now; return; }
+  let dt = now - PERF.last; PERF.last = now;
+  if (dt > 250) { const skip = !PERF.longPrev; PERF.longPrev = true; if (skip) return; dt = Math.min(dt, 1000); }
+  else PERF.longPrev = false;
+  PERF.bt += dt; PERF.bn++;
+  if (PERF.bt < 1000) return;
+  PERF.buckets[PERF.bi] = PERF.bt; PERF.frames[PERF.bi] = PERF.bn; PERF.bi = (PERF.bi + 1) % PERF.window;
+  PERF.bt = 0; PERF.bn = 0;
+  if (PERF.filled < PERF.window) PERF.filled++;
+  if (PERF.filled < PERF.window) return;
+  let t = 0, n = 0; for (let i = 0; i < PERF.window; i++) { t += PERF.buckets[i]; n += PERF.frames[i]; }
+  PERF.avg = n * 1000 / t;
+  if (PERF.avg < PERF.minFps) { PERF.dropped = true; PERF.dropAvg = PERF.avg; setQuality('low', true); }
+}
+
+onQuality(level => {
+  const high = level === 'high', B = high ? BLOOM.high : BLOOM.low;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  sun.shadow.radius = high ? 2.5 : 1.5;
+  const size = high ? 2048 : 1024;
+  if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  gtaoPass.enabled = high;            // AO only on High; its targets shrink to 1x1 while off
+  bloomPass.strength = B.strength; bloomPass.radius = B.radius; bloomScale = B.scale;
+  resize();                           // re-sizes renderer, composer and every pass
+  perfReset(3);
+});
+// Draws one frame through the post chain.
+function renderFrame() {
+  const now = performance.now();
+  if (renderDebug && PERF.slowMs > 0) { const end = now + PERF.slowMs; while (performance.now() < end); } // ?debug only: fake a slow device
+  perfSample(now);
+  composer.render();
+}
+if (renderDebug) window.SKR = { composer, gtaoPass, bloomPass, smaaPass, outputPass, PERF, BLOOM, sun, hemi };
 
 // Shared material helpers (physically based).
 const lam = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, metalness: 0, ...o });
@@ -420,19 +509,42 @@ for (const o of OBST) {
 
 /* ---------- item boxes ---------- */
 // (render pipeline owns the item box look: glow and bloom)
-const qTex = canvasTex(128, 128, (g, w, h) => {
-  g.fillStyle = '#7C4DFF'; g.fillRect(0, 0, w, h);
-  g.strokeStyle = '#FFF4DC'; g.lineWidth = 10; g.strokeRect(8, 8, w - 16, h - 16);
-  g.fillStyle = '#FFF4DC'; g.font = 'bold 84px Arial Black, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('?', w / 2, h / 2 + 4);
+// One face texture: violet gradient panel, bright frame and "?" glyph. A matching emissive
+// map lights only the frame and glyph, pushed into HDR so they (and nothing else) bloom.
+function qFace(g, w, h, glow) {
+  if (glow) { g.fillStyle = '#000'; g.fillRect(0, 0, w, h); }
+  else {
+    const grd = g.createLinearGradient(0, 0, w, h); grd.addColorStop(0, '#8F63FF'); grd.addColorStop(1, '#5B2FD6');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,.10)'; g.fillRect(22, 22, w - 44, (h - 44) / 2);
+  }
+  const ink = glow ? '#FFFFFF' : '#FFF4DC';
+  g.strokeStyle = ink; g.lineWidth = 12; g.lineJoin = 'round';
+  g.beginPath(); g.roundRect ? g.roundRect(14, 14, w - 28, h - 28, 22) : g.rect(14, 14, w - 28, h - 28); g.stroke();
+  g.font = '900 150px "Arial Black", Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  if (!glow) { g.lineWidth = 14; g.strokeStyle = '#3B1A9E'; g.strokeText('?', w / 2, h / 2 + 10); }
+  g.fillStyle = ink; g.fillText('?', w / 2, h / 2 + 10);
+}
+const qTex = canvasTex(256, 256, (g, w, h) => qFace(g, w, h, false));
+const qGlowTex = canvasTex(256, 256, (g, w, h) => qFace(g, w, h, true));
+const boxGeo = new RoundedBoxGeometry(2, 2, 2, 3, 0.22);
+const boxMat = new THREE.MeshStandardMaterial({ map: qTex, emissiveMap: qGlowTex, emissive: new THREE.Color('#FFE9B8'), emissiveIntensity: 1.0, roughness: 0.55, metalness: 0 });
+// floor pads: one merged mesh with a soft radial glow texture (one draw call for all 13)
+const padTex = canvasTex(128, 128, (g, w, h) => {
+  const r = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+  r.addColorStop(0, 'rgba(255,255,255,.55)'); r.addColorStop(0.62, 'rgba(255,255,255,.35)'); r.addColorStop(0.72, 'rgba(255,255,255,.95)');
+  r.addColorStop(0.8, 'rgba(255,255,255,.9)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, w, h);
 });
-const boxGeo = new THREE.BoxGeometry(2, 2, 2);
-const boxMat = new THREE.MeshStandardMaterial({ map: qTex, emissive: new THREE.Color('#3A1E99'), emissiveIntensity: 0.6, roughness: 0.5 });
+const padMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#8A5CFF'), map: padTex, transparent: true, opacity: 0.75, depthWrite: false });
 const boxes = BOX_SPOTS.map(([x, z], i) => {
   const m = new THREE.Mesh(boxGeo, boxMat); m.position.set(x, 1.6, z); m.castShadow = true; scene.add(m);
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.08, 24), new THREE.MeshBasicMaterial({ color: '#7C4DFF', transparent: true, opacity: .35 }));
-  pad.position.set(x, 0.05, z); scene.add(pad);
   return { i, x, z, availableAt: 0, mesh: m, phase: i * 0.7 };
 });
+{
+  const pads = mergeGeometries(BOX_SPOTS.map(([x, z]) => new THREE.CircleGeometry(2.3, 32).rotateX(-Math.PI / 2).translate(x, 0.05, z)));
+  const padMesh = new THREE.Mesh(pads, padMat); padMesh.renderOrder = 1; scene.add(padMesh);
+}
 
 /* ---------- karts (MODELS) ---------- */
 // Recolour a kart view (remote players can change colour). Models may replace the body.
@@ -499,10 +611,19 @@ function styleKart(v, s, t) {
    FX: projectiles, explosions, smoke, skid marks (render pipeline owns glow).
    ========================================================================= */
 /* ---------- projectile & fx meshes ---------- */
+// HDR colour for glowing effects: scales a colour so its linear luminance reaches `lum`
+// (bloom threshold is BLOOM.threshold). Tone mapping stays on, so it still reads as the hue.
+// `deep` (0..1) darkens the weaker channels first, so ACES keeps a fiery hue instead of going white.
+function hdr(c, lum, deep = 0) {
+  const col = new THREE.Color(c); col.g *= 1 - deep * 0.35; col.b *= 1 - deep * 0.6;
+  const l = col.r * 0.2126 + col.g * 0.7152 + col.b * 0.0722; return col.multiplyScalar(Math.max(1, lum / Math.max(l, 0.02)));
+}
 const shotMats = {
-  rocketBody: lam('#F5F1E6'), rocketTip: lam('#E8553E'), bang: lam('#F2B134'), bangTip: lam('#23304A'),
-  bullet: new THREE.MeshBasicMaterial({ color: '#FFE16B' }), frost: new THREE.MeshBasicMaterial({ color: '#9FE8FF' }),
-  lob: lam('#2B2F3A'), band: lam('#E8553E'), mine: lam('#3A3F4D'), light: new THREE.MeshBasicMaterial({ color: '#FF3B2F' }),
+  rocketBody: lam('#F5F1E6', { roughness: 0.4, metalness: 0.2 }), rocketTip: lam('#E8553E', { emissive: hdr('#FF5A2E', 1), emissiveIntensity: 1.8, roughness: 0.4 }),
+  bang: lam('#F2B134', { roughness: 0.4, metalness: 0.2 }), bangTip: lam('#23304A', { emissive: hdr('#FF7A2E', 1), emissiveIntensity: 1.2 }),
+  bullet: new THREE.MeshBasicMaterial({ color: hdr('#FFE16B', 2.4) }), frost: new THREE.MeshBasicMaterial({ color: hdr('#9FE8FF', 2.2) }),
+  lob: lam('#2B2F3A', { roughness: 0.5, metalness: 0.3 }), band: lam('#E8553E', { emissive: hdr('#FF5A2E', 1), emissiveIntensity: 0.9 }),
+  mine: lam('#3A3F4D', { roughness: 0.45, metalness: 0.4 }), light: new THREE.MeshBasicMaterial({ color: hdr('#FF3B2F', 2.8) }),
 };
 const G = {
   rocketBody: new THREE.CylinderGeometry(0.28, 0.28, 1.5, 10).rotateX(Math.PI / 2),
@@ -525,15 +646,15 @@ function makeShotMesh(type, yaw) {
 const fxList = [];
 const fxSphereGeo = new THREE.SphereGeometry(1, 16, 12), fxRingGeo = new THREE.RingGeometry(0.8, 1, 32), debrisGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
 function boomFx(x, z, radius, color = '#FF9A3C') {
-  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .9, depthWrite: false }));
+  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: hdr(color, 2.0, 1), transparent: true, opacity: .9, depthWrite: false }));
   s.position.set(x, 1, z); s.renderOrder = 2; scene.add(s);
   fxList.push({ m: s, t: 0, dur: 0.45, kind: 'grow', r: radius });
-  const ring = new THREE.Mesh(fxRingGeo, new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
+  const ring = new THREE.Mesh(fxRingGeo, new THREE.MeshBasicMaterial({ color: hdr('#FFE2B0', 2.0), transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
   ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.2, z); ring.renderOrder = 2; scene.add(ring);
   fxList.push({ m: ring, t: 0, dur: 0.5, kind: 'grow', r: radius * 1.3 });
   const n = Math.min(14, 5 + Math.round(radius));
   for (let i = 0; i < n; i++) {
-    const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : color, transparent: true }));
+    const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : hdr(color, 1.8, 1), transparent: true }));
     d.position.set(x, 1, z); scene.add(d);
     const a = Math.random() * TAU, sp = rand(6, 14);
     fxList.push({ m: d, t: 0, dur: rand(.6, 1), kind: 'debris', vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(6, 14) });
@@ -541,7 +662,7 @@ function boomFx(x, z, radius, color = '#FF9A3C') {
   if (me && started) { const dd = Math.hypot(x - me.x, z - me.z); if (dd < radius + 14 && !reduceMotion) shake = Math.max(shake, clamp(1 - dd / (radius + 14), 0, 1) * 0.9); }
 }
 function puffFx(x, z, color, size = 1.2) {
-  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .8, depthWrite: false }));
+  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: hdr(color, 2.0), transparent: true, opacity: .8, depthWrite: false }));
   s.position.set(x, 1.2, z); s.renderOrder = 2; scene.add(s); fxList.push({ m: s, t: 0, dur: 0.3, kind: 'grow', r: size });
 }
 // drift: skid marks (one instanced mesh used as a ring buffer) and tyre smoke
@@ -573,7 +694,7 @@ function driftFx(v, drifting, x, z, bodyYaw, dt) {
   if (v.smokeT <= 0) {
     v.smokeT = DRIVE.SMOKE_EVERY;
     for (const [wx, wz] of wheels) {
-      const m = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: '#E9E6E0', transparent: true, opacity: 0.45, depthWrite: false }));
+      const m = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: '#D9D6D0', transparent: true, opacity: 0.45, depthWrite: false })); // stays below the bloom threshold
       m.position.set(wx + rand(-0.2, 0.2), 0.5, wz + rand(-0.2, 0.2)); m.renderOrder = 2; scene.add(m); // drawn over skid marks
       fxList.push({ m, t: 0, dur: rand(0.45, 0.7), kind: 'smoke', r: rand(1.1, 1.6) });
     }
