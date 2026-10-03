@@ -170,8 +170,24 @@ kbd{font-family:var(--body);font-weight:900;font-size:12px;background:#fff;color
 </div>
 
 <noscript>Scrap Karts needs JavaScript to run.</noscript>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 'use strict';
 /* =========================================================================
    Scrap Karts: an arena kart brawler.
@@ -267,35 +283,80 @@ const DEF = {
 const DIRECT = { r: 1, n: 1, g: 1, f: 1 };
 
 /* ---------- three.js scene ---------- */
+/* =========================================================================
+   RENDER PIPELINE: renderer, lights, environment, quality levels, post-fx.
+   Everything above the three.js scene marker must stay free of THREE/DOM
+   (test/physics.test.js runs that code in Node).
+   ========================================================================= */
 const canvas = $('#c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap; // r186: PCF is soft via shadow.radius (PCFSoftShadowMap was removed)
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#A9D8EA');
-scene.fog = new THREE.Fog('#A9D8EA', 130, 280);
-const camera = new THREE.PerspectiveCamera(58, 1, 0.5, 600);
+const camera = new THREE.PerspectiveCamera(58, 1, 0.5, 900);
 camera.position.set(0, 60, 90);
-function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.fov = camera.aspect < 1 ? 74 : 58; camera.updateProjectionMatrix(); }
-addEventListener('resize', resize); resize();
+// image-based lighting from a neutral studio room
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.45;
 
-scene.add(new THREE.HemisphereLight('#E6F4FF', '#6B5A45', 0.75));
-const sun = new THREE.DirectionalLight('#FFF1D6', 0.85);
+const resizeHooks = []; // fn(w, h) — post-processing registers here
+function resize() {
+  const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.fov = camera.aspect < 1 ? 74 : 58; camera.updateProjectionMatrix();
+  for (const f of resizeHooks) f(w, h);
+}
+addEventListener('resize', resize);
+
+const hemi = new THREE.HemisphereLight('#E6F4FF', '#6B5A45', 1.1);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight('#FFF1D6', 2.6);
 sun.position.set(40, 80, 25); sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -78, right: 78, top: 78, bottom: -78, near: 10, far: 200 });
-sun.shadow.bias = -0.0008;
+sun.shadow.bias = -0.0008; sun.shadow.normalBias = 0.02; sun.shadow.radius = 3;
 scene.add(sun);
 
-const lam = c => new THREE.MeshLambertMaterial({ color: c });
-function canvasTex(w, h, draw, repeat) {
+// Quality: 'high' | 'low'. setQuality() applies it and tells every listener (post-fx, UI).
+const QUALITY = { level: 'high', auto: false, listeners: [] };
+try { const q = localStorage.getItem('scrapkarts.quality'); if (q === 'low' || q === 'high') QUALITY.level = q; } catch (e) {}
+function onQuality(fn) { QUALITY.listeners.push(fn); fn(QUALITY.level, false); }
+function setQuality(level, auto = false) {
+  if (level !== 'low' && level !== 'high') return;
+  QUALITY.level = level; QUALITY.auto = auto;
+  if (!auto) { try { localStorage.setItem('scrapkarts.quality', level); } catch (e) {} }
+  for (const f of QUALITY.listeners) f(level, auto);
+}
+onQuality(level => {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, level === 'high' ? 1.75 : 1));
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  sun.shadow.radius = level === 'high' ? 3 : 1;
+  const size = level === 'high' ? 2048 : 1024;
+  if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  resize();
+});
+// Draws one frame. Post-processing replaces the body of this.
+function renderFrame() { renderer.render(scene, camera); }
+
+// Shared material helpers (physically based).
+const lam = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, metalness: 0, ...o });
+function canvasTex(w, h, draw, repeat, color = true) {
   const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
   draw(cv.getContext('2d'), w, h);
   const t = new THREE.CanvasTexture(cv);
+  if (color) t.colorSpace = THREE.SRGBColorSpace;
   if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, repeat); }
-  t.anisotropy = 4; return t;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4; return t;
 }
+
+/* =========================================================================
+   ARENA: sky, fog, ground, markings, perimeter, distant scenery.
+   ========================================================================= */
+scene.background = new THREE.Color('#A9D8EA');
+scene.fog = new THREE.Fog('#A9D8EA', 130, 280);
 
 // grass + tarmac
 const grass = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), lam('#8DBF6A'));
@@ -305,7 +366,7 @@ const tarmacTex = canvasTex(256, 256, (g, w, h) => {
   for (let i = 0; i < 900; i++) { g.fillStyle = Math.random() < .5 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.08)'; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
   g.strokeStyle = 'rgba(255,244,220,.07)'; g.lineWidth = 2; g.strokeRect(0, 0, w, h);
 }, 16);
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), new THREE.MeshLambertMaterial({ map: tarmacTex }));
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), new THREE.MeshStandardMaterial({ map: tarmacTex, roughness: 0.92, metalness: 0 }));
 floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
 function paintRing(r1_, r2_, op) {
   const m = new THREE.Mesh(new THREE.RingGeometry(r1_, r2_, 64), new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: op }));
@@ -330,6 +391,10 @@ for (const [x, z] of SPAWNS) {
   }
 })();
 
+/* =========================================================================
+   MODELS: obstacles (containers, crates, tyre stacks) and karts.
+   Collision sizes come from OBST and KART_R; models must match them.
+   ========================================================================= */
 // obstacles
 function stripeTex(color, vertical) {
   return canvasTex(128, 128, (g, w, h) => {
@@ -348,19 +413,20 @@ for (const o of OBST) {
     }
     continue;
   }
-  const mat = new THREE.MeshLambertMaterial({ map: stripeTex(o.color, o.kind === 'container') });
+  const mat = new THREE.MeshStandardMaterial({ map: stripeTex(o.color, o.kind === 'container'), roughness: 0.7, metalness: 0.15 });
   const box = new THREE.Mesh(new THREE.BoxGeometry(o.w, o.h, o.d), mat);
   box.position.set(o.x, o.h / 2, o.z); box.castShadow = box.receiveShadow = true; scene.add(box);
 }
 
 /* ---------- item boxes ---------- */
+// (render pipeline owns the item box look: glow and bloom)
 const qTex = canvasTex(128, 128, (g, w, h) => {
   g.fillStyle = '#7C4DFF'; g.fillRect(0, 0, w, h);
   g.strokeStyle = '#FFF4DC'; g.lineWidth = 10; g.strokeRect(8, 8, w - 16, h - 16);
   g.fillStyle = '#FFF4DC'; g.font = 'bold 84px Arial Black, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('?', w / 2, h / 2 + 4);
 });
 const boxGeo = new THREE.BoxGeometry(2, 2, 2);
-const boxMat = new THREE.MeshLambertMaterial({ map: qTex, emissive: new THREE.Color('#3A1E99'), emissiveIntensity: 0.6 });
+const boxMat = new THREE.MeshStandardMaterial({ map: qTex, emissive: new THREE.Color('#3A1E99'), emissiveIntensity: 0.6, roughness: 0.5 });
 const boxes = BOX_SPOTS.map(([x, z], i) => {
   const m = new THREE.Mesh(boxGeo, boxMat); m.position.set(x, 1.6, z); m.castShadow = true; scene.add(m);
   const pad = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.08, 24), new THREE.MeshBasicMaterial({ color: '#7C4DFF', transparent: true, opacity: .35 }));
@@ -368,19 +434,22 @@ const boxes = BOX_SPOTS.map(([x, z], i) => {
   return { i, x, z, availableAt: 0, mesh: m, phase: i * 0.7 };
 });
 
-/* ---------- karts ---------- */
+/* ---------- karts (MODELS) ---------- */
+// Recolour a kart view (remote players can change colour). Models may replace the body.
+function recolorKart(v, color) { v.bodyMat.color.set(color); }
 const darkMat = lam('#2B2F3A');
 function nameSprite(text) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
   const g = cv.getContext('2d');
   g.font = '800 34px Nunito, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.lineWidth = 7; g.strokeStyle = '#23304A'; g.strokeText(text, 128, 34); g.fillStyle = '#FFF4DC'; g.fillText(text, 128, 34);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
   sp.scale.set(6.4, 1.6, 1); sp.position.y = 4; sp.renderOrder = 10; return sp;
 }
 function buildKart(color) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color });
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 });
   const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
   add(new THREE.BoxGeometry(2.2, 0.7, 3.2), bodyMat, 0, 0.75, 0);
   add(new THREE.BoxGeometry(1.8, 0.45, 0.9), bodyMat, 0, 0.62, 1.9);
@@ -403,7 +472,7 @@ function buildKart(color) {
     c.position.set(Math.cos(a) * 2.9, 0, Math.sin(a) * 2.9); c.rotation.z = -Math.PI / 2; c.rotation.y = -a; spikes.add(c);
   }
   spikes.position.y = 0.9; spikes.visible = false; g.add(spikes);
-  const ice = new THREE.Mesh(new THREE.BoxGeometry(3.4, 3, 4.4), new THREE.MeshLambertMaterial({ color: '#BFEFFF', transparent: true, opacity: .6 }));
+  const ice = new THREE.Mesh(new THREE.BoxGeometry(3.4, 3, 4.4), new THREE.MeshStandardMaterial({ color: '#BFEFFF', transparent: true, opacity: .6, roughness: 0.15 }));
   ice.position.y = 1.4; ice.visible = false; g.add(ice);
   const shield = new THREE.Mesh(new THREE.SphereGeometry(2.8, 20, 14), new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: .2, depthWrite: false }));
   shield.position.y = 1.2; shield.renderOrder = 2; shield.visible = false; g.add(shield);
@@ -426,6 +495,9 @@ function styleKart(v, s, t) {
   const spin = (s.sp || 0) * 0.06; for (const w of v.wheels) w.rotation.x += spin;
 }
 
+/* =========================================================================
+   FX: projectiles, explosions, smoke, skid marks (render pipeline owns glow).
+   ========================================================================= */
 /* ---------- projectile & fx meshes ---------- */
 const shotMats = {
   rocketBody: lam('#F5F1E6'), rocketTip: lam('#E8553E'), bang: lam('#F2B134'), bangTip: lam('#23304A'),
@@ -973,7 +1045,7 @@ function syncRemotes(dt, now) {
     R.p = p; R.at = at;
     if (name !== R.name) { R.name = name; setTag(R.view, name); }
     const ci = clamp(p.c | 0, 0, COLORS.length - 1);
-    if (ci !== R.ci) { R.ci = ci; R.view.bodyMat.color.set(COLORS[ci]); }
+    if (ci !== R.ci) { R.ci = ci; recolorKart(R.view, COLORS[ci]); }
     // deaths
     if (p.rd === curRd) {
       if (R.lastRd === curRd && R.lastD != null && p.d > R.lastD) {
@@ -1252,7 +1324,16 @@ function frame(t) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (t - last) / 1000); last = t;
   update(dt);
-  renderer.render(scene, camera);
+  renderFrame();
+}
+// Test/debug handle, only with ?debug in the URL (module scope hides everything else).
+if (/[?&]debug(?:[=&]|$)/.test(location.search)) {
+  window.SK = {
+    THREE, scene, camera, renderer, DRIVE, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence,
+    get me() { return me; }, get bots() { return bots; }, get remotes() { return remotes; }, get Net() { return Net; },
+    get started() { return started; }, get curRd() { return curRd; }, get fxList() { return fxList; }, get boxes() { return boxes; },
+    get physics() { return physics; }, get skidNext() { return skidNext; },
+  };
 }
 requestAnimationFrame(frame);
 </script>

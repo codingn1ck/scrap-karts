@@ -9,12 +9,28 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 const MAX_PER_ROOM = 12;
 const page = fs.readFileSync(path.join(__dirname, 'index.html'));
+const ASSETS = path.join(__dirname, 'assets');
+const TYPES = { '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream', '.png': 'image/png', '.jpg': 'image/jpeg', '.txt': 'text/plain; charset=utf-8', '.svg': 'image/svg+xml' };
+
+// Static files under /assets (3D models, textures, licence files). Nothing outside assets/ is reachable.
+function serveAsset(url, res) {
+  let rel; try { rel = decodeURIComponent(url.slice('/assets/'.length)); } catch { rel = ''; }
+  const file = path.join(ASSETS, rel), type = TYPES[path.extname(file).toLowerCase()];
+  if (!rel || !type || !file.startsWith(ASSETS + path.sep)) { res.writeHead(404); res.end('Not found'); return; }
+  fs.readFile(file, (err, data) => {
+    if (err) { res.writeHead(404); res.end('Not found'); return; }
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=86400' });
+    res.end(data);
+  });
+}
 
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/' || url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
     res.end(page);
+  } else if (url.startsWith('/assets/')) {
+    serveAsset(url, res);
   } else if (url === '/health') {
     res.end('ok');
   } else {
