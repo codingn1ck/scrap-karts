@@ -355,41 +355,449 @@ function canvasTex(w, h, draw, repeat, color = true) {
 /* =========================================================================
    ARENA: sky, fog, ground, markings, perimeter, distant scenery.
    ========================================================================= */
-scene.background = new THREE.Color('#A9D8EA');
-scene.fog = new THREE.Fog('#A9D8EA', 130, 280);
-
-// grass + tarmac
-const grass = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), lam('#8DBF6A'));
-grass.rotation.x = -Math.PI / 2; grass.position.y = -0.05; grass.receiveShadow = true; scene.add(grass);
-const tarmacTex = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#3E4C66'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 900; i++) { g.fillStyle = Math.random() < .5 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.08)'; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
-  g.strokeStyle = 'rgba(255,244,220,.07)'; g.lineWidth = 2; g.strokeRect(0, 0, w, h);
-}, 16);
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), new THREE.MeshStandardMaterial({ map: tarmacTex, roughness: 0.92, metalness: 0 }));
-floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
-function paintRing(r1_, r2_, op) {
-  const m = new THREE.Mesh(new THREE.RingGeometry(r1_, r2_, 64), new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: op }));
-  m.rotation.x = -Math.PI / 2; m.position.y = 0.03; scene.add(m);
+// Everything here is static dressing: it never touches collision (walls are maths at +-HALF).
+// The dressing uses its own seeded random, so every client and every reload sees the same arena.
+const arenaRand = (() => { let s = 0x5C4A7; return () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+const ar = (a, b) => a + arenaRand() * (b - a);
+function vnoise(x, y, seed = 0) { // smooth value noise, 0..1
+  const xi = Math.floor(x), yi = Math.floor(y), u = x - xi, v = y - yi, su = u * u * (3 - 2 * u), sv = v * v * (3 - 2 * v);
+  const h = (i, j) => { let n = Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(seed, 982451653) | 0; n = Math.imul(n ^ (n >>> 13), 1274126177); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; };
+  return (h(xi, yi) * (1 - su) + h(xi + 1, yi) * su) * (1 - sv) + (h(xi, yi + 1) * (1 - su) + h(xi + 1, yi + 1) * su) * sv;
 }
-paintRing(8.5, 9.6, .55); paintRing(29, 29.8, .25);
-for (const [x, z] of SPAWNS) {
-  const pad = new THREE.Mesh(new THREE.CircleGeometry(3, 24), new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: .18 }));
-  pad.rotation.x = -Math.PI / 2; pad.position.set(x, 0.03, z); scene.add(pad);
+const fbm = (x, y, seed = 0) => vnoise(x, y, seed) * 0.55 + vnoise(x * 2.03, y * 2.03, seed + 7) * 0.3 + vnoise(x * 4.1, y * 4.1, seed + 13) * 0.15;
+const rot90 = (x, z, k) => { for (let i = 0; i < (k & 3); i++) [x, z] = [-z, x]; return [x, z]; }; // same as rotateY(-k * 90deg)
+function tintGeo(geo, color) { // flat vertex colour (linear) on a geometry
+  const n = geo.attributes.position.count, a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) color.toArray(a, i * 3);
+  geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); return geo;
 }
 
-// perimeter barrier: striped kerbs
-(function buildWalls() {
-  const seg = 4, red = lam('#E8553E'), white = lam('#F5F1E6');
-  const geoX = new THREE.BoxGeometry(seg, 1.6, 1.2), geoZ = new THREE.BoxGeometry(1.2, 1.6, seg);
-  let i = 0;
-  for (let p = -HALF + seg / 2; p < HALF; p += seg, i++) {
-    for (const s of [-1, 1]) {
-      const a = new THREE.Mesh(geoX, i % 2 ? red : white); a.position.set(p, 0.8, s * HALF); a.castShadow = a.receiveShadow = true; scene.add(a);
-      const b = new THREE.Mesh(geoZ, i % 2 ? white : red); b.position.set(s * HALF, 0.8, p); b.castShadow = b.receiveShadow = true; scene.add(b);
+// ---- sky: equirectangular gradient (three turns it into a cube once), horizon colour = fog colour
+const SKY_HORIZON = '#D3E9F1';
+const skyTex = canvasTex(2048, 1024, (g, w, h) => {
+  const hz = h / 2, gr = g.createLinearGradient(0, 0, 0, hz);
+  gr.addColorStop(0, '#3B86D0'); gr.addColorStop(0.45, '#67ADE3'); gr.addColorStop(0.78, '#9DCDEC'); gr.addColorStop(0.94, '#C3E2F0'); gr.addColorStop(1, SKY_HORIZON);
+  g.fillStyle = gr; g.fillRect(0, 0, w, hz + 1);
+  g.fillStyle = SKY_HORIZON; g.fillRect(0, hz, w, h - hz);
+  const puff = (x, y, rx, ry, a) => {
+    for (const ox of [-w, 0, w]) {
+      if (x + ox + rx < 0 || x + ox - rx > w) continue;
+      g.save(); g.translate(x + ox, y); g.scale(1, ry / rx);
+      const rg = g.createRadialGradient(0, 0, 0, 0, 0, rx);
+      rg.addColorStop(0, `rgba(255,255,255,${a})`); rg.addColorStop(0.5, `rgba(255,255,255,${a * 0.65})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = rg; g.beginPath(); g.arc(0, 0, rx, 0, TAU); g.fill(); g.restore();
+    }
+  };
+  for (let c = 0; c < 24; c++) { // soft fair-weather clouds, 4..32 degrees above the horizon
+    const el = ar(4, 32), cy = hz * (1 - el / 90), cx = ar(0, w), size = ar(45, 120) * (1.1 - el / 45), n = 4 + (arenaRand() * 6 | 0);
+    for (let k = 0; k < n; k++) puff(cx + ar(-1.7, 1.7) * size, cy + ar(-0.22, 0.12) * size, size * ar(0.45, 0.9), size * ar(0.22, 0.36), ar(0.28, 0.55));
+  }
+  const y0 = hz * 0.4 | 0, img = g.getImageData(0, y0, w, hz + 4 - y0), d = img.data; // dither the visible band (< ~55 deg) so it does not band
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - 0.5) * 3; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  g.putImageData(img, 0, y0);
+});
+skyTex.mapping = THREE.EquirectangularReflectionMapping;
+scene.background = skyTex;
+scene.fog = new THREE.Fog(SKY_HORIZON, 170, 640); // light: the far side of the arena (~180) stays clear
+
+// ---- grass outside the walls: tiled blades + mowing stripes, large-scale colour variation in vertex colours
+const grassTex = canvasTex(512, 512, (g, w, h) => {
+  g.fillStyle = '#77AE57'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(255,255,230,0.07)'; g.fillRect(0, 0, w / 2, h);
+  g.fillStyle = 'rgba(38,78,22,0.16)'; for (let i = 0; i < 6000; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.3, ar(2, 6));
+  g.fillStyle = 'rgba(225,245,170,0.13)'; for (let i = 0; i < 4500; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.2, ar(2, 5));
+}, 120);
+const grassGeo = new THREE.PlaneGeometry(1800, 1800, 90, 90); grassGeo.rotateX(-Math.PI / 2);
+{
+  const p = grassGeo.attributes.position, col = new Float32Array(p.count * 3), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), d = clamp((fbm(x / 80, z / 80, 3) - 0.2) * 1.4 * 0.7 + vnoise(x / 24, z / 24, 9) * 0.3, 0, 1);
+    c.setRGB(0.74 + d * 0.42, 0.9 + d * 0.16, 0.84 - d * 0.06).toArray(col, i * 3); // lush green (d = 0) to dry, sun-bleached (d = 1)
+  }
+  grassGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const idx = grassGeo.index.array, keep = []; // cut out the cells hidden under the tarmac (saves shading them twice)
+  for (let i = 0; i < idx.length; i += 3) {
+    let under = true;
+    for (let k = 0; k < 3; k++) if (Math.abs(p.getX(idx[i + k])) > HALF - 3.9 || Math.abs(p.getZ(idx[i + k])) > HALF - 3.9) under = false;
+    if (!under) keep.push(idx[i], idx[i + 1], idx[i + 2]);
+  }
+  grassGeo.setIndex(keep);
+}
+const grass = new THREE.Mesh(grassGeo, new THREE.MeshStandardMaterial({ map: grassTex, vertexColors: true, roughness: 0.95, metalness: 0 }));
+grass.position.y = -0.05; scene.add(grass); // no shadow lookups: barrier and board shadows land on the apron
+// concrete apron under the barrier, between tarmac and grass
+const apronTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#B4B2AA'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(60,60,60,.10)'; for (let i = 0; i < 2500; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5);
+  g.fillStyle = 'rgba(255,255,255,.10)'; for (let i = 0; i < 1500; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5);
+  g.strokeStyle = 'rgba(70,70,70,.35)'; g.lineWidth = 3; g.strokeRect(0, 0, w, h);
+}, 1);
+const apronGeo = mergeGeometries([0, 1, 2, 3].map(k => { // four strips around the tarmac, 8 units wide
+  const g = new THREE.PlaneGeometry(HALF * 2 + 16, 8.6); g.rotateX(-Math.PI / 2); g.translate(0, 0, HALF + 3.7);
+  g.rotateY(-k * Math.PI / 2); return g; // corners overlap with identical world-mapped texels
+}));
+{ const p = apronGeo.attributes.position, uv = apronGeo.attributes.uv; for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / 8, p.getZ(i) / 8); }
+const apron = new THREE.Mesh(apronGeo, new THREE.MeshStandardMaterial({ map: apronTex, roughness: 0.95, metalness: 0 }));
+apron.position.y = -0.025; apron.receiveShadow = true; scene.add(apron);
+
+// ---- tarmac: one unique 2048 colour map for the whole floor (16 texels per unit: wear, patches, cracks, stains)
+// plus a tiled grain map used as bump (R) and roughness (G) for the fine aggregate.
+const tarmacTex = canvasTex(2048, 2048, (g, w, h) => {
+  const P = w / (HALF * 2), C = w / 2; // texels per world unit, canvas centre (canvas x = world x, canvas y = world z)
+  g.fillStyle = '#4A505D'; g.fillRect(0, 0, w, h);
+  const blob = (x, y, r, rgba) => { const rg = g.createRadialGradient(x, y, 0, x, y, r); rg.addColorStop(0, rgba); rg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = rg; g.fillRect(x - r, y - r, 2 * r, 2 * r); };
+  for (let i = 0; i < 240; i++) blob(ar(0, w), ar(0, h), ar(70, 280), arenaRand() < 0.55 ? 'rgba(18,22,30,.10)' : 'rgba(205,210,220,.06)');
+  // rubbered-in wear where karts circulate (around the centre and the outer lane)
+  g.lineCap = 'round';
+  const band = (r, lw, a) => {
+    g.lineWidth = lw; g.strokeStyle = `rgba(14,16,22,${a})`; g.beginPath();
+    g.ellipse(C + ar(-3, 3) * P, C + ar(-3, 3) * P, r * P * ar(0.93, 1.07), r * P * ar(0.93, 1.07), ar(0, TAU), 0, TAU); g.stroke();
+  };
+  for (let i = 0; i < 24; i++) band(ar(16, 30), ar(24, 70), 0.014);
+  for (let i = 0; i < 24; i++) band(ar(40, 54), ar(24, 70), 0.012);
+  for (let i = 0; i < 110; i++) {
+    const r = (arenaRand() < 0.5 ? ar(17, 30) : ar(40, 55)) * P, a0 = ar(0, TAU);
+    g.lineWidth = ar(3, 7); g.strokeStyle = `rgba(10,12,16,${ar(0.025, 0.06)})`; g.beginPath(); g.arc(C, C, r, a0, a0 + ar(0.15, 0.9)); g.stroke();
+  }
+  // dirt collects along the barrier
+  for (let k = 0; k < 4; k++) {
+    g.save(); g.translate(C, C); g.rotate(k * Math.PI / 2);
+    const lg = g.createLinearGradient(0, C - 4 * P, 0, C); lg.addColorStop(0, 'rgba(25,24,22,0)'); lg.addColorStop(1, 'rgba(25,24,22,.32)');
+    g.fillStyle = lg; g.fillRect(-C, C - 4 * P, w, 4 * P); g.restore();
+  }
+  // repair patches (fresh, darker asphalt with a sealed joint)
+  for (let i = 0; i < 10; i++) {
+    const pw = ar(3, 8) * P, ph = ar(2, 5) * P, dark = arenaRand() < 0.7;
+    g.save(); g.translate(ar(0.08, 0.92) * w, ar(0.08, 0.92) * h); g.rotate(arenaRand() < 0.5 ? 0 : ar(-0.4, 0.4));
+    g.fillStyle = dark ? 'rgba(28,32,40,.16)' : 'rgba(160,165,175,.07)'; g.fillRect(-pw / 2, -ph / 2, pw, ph);
+    g.strokeStyle = 'rgba(16,18,24,.3)'; g.lineWidth = 2; g.strokeRect(-pw / 2, -ph / 2, pw, ph); g.restore();
+  }
+  // oil and rubber stains
+  for (let i = 0; i < 22; i++) blob(ar(0.05, 0.95) * w, ar(0.05, 0.95) * h, ar(0.8, 2.6) * P, `rgba(8,10,14,${ar(0.18, 0.34)})`);
+  // cracks (branching random walks)
+  g.lineJoin = 'round';
+  const crack = (x, y, a, n, lw) => {
+    const pts = [[x, y]];
+    for (let i = 0; i < n; i++) {
+      a += ar(-0.55, 0.55); x += Math.cos(a) * ar(4, 11); y += Math.sin(a) * ar(4, 11); pts.push([x, y]);
+      if (lw > 1 && arenaRand() < 0.07) crack(x, y, a + (arenaRand() < 0.5 ? -1 : 1) * ar(0.6, 1.3), n / 3 | 0, lw * 0.6);
+    }
+    g.lineWidth = lw; g.strokeStyle = 'rgba(10,12,16,.42)'; g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
+    for (const [px, py] of pts) g.lineTo(px, py); g.stroke();
+  };
+  for (let i = 0; i < 20; i++) crack(ar(0, w), ar(0, h), ar(0, TAU), 8 + (arenaRand() * 22 | 0), ar(1, 1.8));
+  // aggregate speckle at two scales
+  g.fillStyle = 'rgba(230,234,242,.10)'; for (let i = 0; i < 42000; i++) g.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+  g.fillStyle = 'rgba(4,6,10,.13)'; for (let i = 0; i < 42000; i++) g.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+  g.fillStyle = 'rgba(220,224,232,.07)'; for (let i = 0; i < 9000; i++) { const s = ar(2, 4); g.fillRect(Math.random() * w, Math.random() * h, s, s); }
+  g.fillStyle = 'rgba(6,8,12,.08)'; for (let i = 0; i < 9000; i++) { const s = ar(2, 4); g.fillRect(Math.random() * w, Math.random() * h, s, s); }
+});
+const grainTex = canvasTex(512, 512, (g, w, h) => { // R = height (stones), G = roughness; tiles every 8 units
+  const img = g.createImageData(w, h), d = img.data, hgt = new Float32Array(w * h);
+  for (let i = 0; i < hgt.length; i++) hgt[i] = Math.random() * 0.3;
+  for (let s = 0; s < 9000; s++) {
+    const cx = Math.random() * w | 0, cy = Math.random() * h | 0, r = 0.8 + Math.random() * 2.2, v = 0.5 + Math.random() * 0.5, R = Math.ceil(r);
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      const q = (dx * dx + dy * dy) / (r * r); if (q > 1) continue;
+      const i = ((cy + dy + h) % h) * w + ((cx + dx + w) % w); hgt[i] = Math.max(hgt[i], v * (1 - q * 0.6));
     }
   }
+  for (let i = 0; i < hgt.length; i++) { d[i * 4] = hgt[i] * 255; d[i * 4 + 1] = (0.97 - hgt[i] * 0.22) * 255; d[i * 4 + 2] = 0; d[i * 4 + 3] = 255; }
+  g.putImageData(img, 0, 0);
+}, 16, false);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2),
+  new THREE.MeshStandardMaterial({ map: tarmacTex, roughnessMap: grainTex, bumpMap: grainTex, bumpScale: 1.4, roughness: 1, metalness: 0 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+// ---- painted markings: flat geometry in one merged mesh at y = 0.02 (skid marks sit above at 0.045)
+(function buildMarkings() {
+  const parts = [], W = new THREE.Color('#E4DFD1'), Y = new THREE.Color('#EDB136');
+  const push = (geo, col) => parts.push(tintGeo(geo.index ? geo.toNonIndexed() : geo, col));
+  const poly = (pts, col) => { // world-space XZ polygon
+    const geo = new THREE.ShapeGeometry(new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, -z)))); geo.rotateX(-Math.PI / 2); push(geo, col);
+  };
+  const seg = (a, b, lw, col) => {
+    const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz), nx = -dz / l * lw / 2, nz = dx / l * lw / 2;
+    poly([[a[0] + nx, a[1] + nz], [b[0] + nx, b[1] + nz], [b[0] - nx, b[1] - nz], [a[0] - nx, a[1] - nz]], col);
+  };
+  const ring = (r0, r1, col) => { const geo = new THREE.RingGeometry(r0, r1, 128); geo.rotateX(-Math.PI / 2); push(geo, col); };
+  const arc = (r0, r1, a0, a1, col) => {
+    const n = Math.max(2, Math.ceil(Math.abs(a1 - a0) * r1 / 0.8)), pts = [];
+    for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; pts.push([Math.cos(a) * r1, Math.sin(a) * r1]); }
+    for (let i = n; i >= 0; i--) { const a = a0 + (a1 - a0) * i / n; pts.push([Math.cos(a) * r0, Math.sin(a) * r0]); }
+    poly(pts, col);
+  };
+  const dashed = (r0, r1, n, duty, col) => { for (let i = 0; i < n; i++) { const a = i / n * TAU; arc(r0, r1, a, a + TAU / n * duty, col); } };
+  // clip a polygon to a convex polygon (Sutherland-Hodgman); both counter-clockwise or both clockwise
+  const clip = (pts, conv) => {
+    const side = (p, a, b) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    const s0 = Math.sign(side(conv[2], conv[0], conv[1]));
+    for (let i = 0; i < conv.length && pts.length; i++) {
+      const a = conv[i], b = conv[(i + 1) % conv.length], out = [];
+      for (let j = 0; j < pts.length; j++) {
+        const p = pts[j], q = pts[(j + 1) % pts.length], sp = side(p, a, b) * s0, sq = side(q, a, b) * s0;
+        if (sp >= 0) out.push(p);
+        if (sp * sq < 0) { const t = sp / (sp - sq); out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]); }
+      }
+      pts = out;
+    }
+    return pts;
+  };
+  // diagonal hatching inside a convex area, then its outline
+  const hatch = (conv, dir, col, step = 1.7, lw = 0.55) => { // stripes run across `dir`
+    const l = Math.hypot(dir[0], dir[1]), nx = dir[0] / l, nz = dir[1] / l, px = -nz * 200, pz = nx * 200;
+    let lo = 1e9, hi = -1e9; for (const [x, z] of conv) { const t = x * nx + z * nz; lo = Math.min(lo, t); hi = Math.max(hi, t); }
+    for (let c = lo + 0.4; c < hi; c += step) {
+      const a = [nx * c, nz * c], b = [nx * (c + lw), nz * (c + lw)];
+      const p = clip([[a[0] - px, a[1] - pz], [a[0] + px, a[1] + pz], [b[0] + px, b[1] + pz], [b[0] - px, b[1] - pz]], conv);
+      if (p.length >= 3) poly(p, col);
+    }
+    for (let i = 0; i < conv.length; i++) seg(conv[i], conv[(i + 1) % conv.length], 0.26, col);
+  };
+
+  // centre circle and the outer lane ring
+  ring(8.6, 9.3, W); dashed(10.0, 10.25, 36, 0.5, Y);
+  dashed(29.2, 29.8, 40, 0.55, W);
+  // edge line just inside the barrier
+  const E = HALF - 1.8;
+  for (let k = 0; k < 4; k++) seg(rot90(-E - 0.15, E, k), rot90(E + 0.15, E, k), 0.3, W);
+  for (let k = 0; k < 4; k++) {
+    // hatched no-stopping zone at the middle of each wall, and a hatched corner triangle
+    hatch([[-9, 56.6], [9, 56.6], [9, 61.6], [-9, 61.6]].map(([x, z]) => rot90(x, z, k)), rot90(1, 1, k), Y);
+    hatch([[E - 0.2, E - 6], [E - 0.2, E - 0.2], [E - 6, E - 0.2]].map(([x, z]) => rot90(x, z, k)), rot90(1, -1, k), Y, 1.5, 0.5);
+    // circulation arrows on the outer lane (anticlockwise seen from above)
+    const ac = (30 + 90 * k) * Math.PI / 180, a0 = ac - 0.16, a1 = ac + 0.1;
+    arc(43.7, 44.3, a0, a1, W);
+    const P = (a, r) => [Math.cos(a) * r, Math.sin(a) * r];
+    poly([P(a1, 42.6), P(a1 + 0.075, 44), P(a1, 45.4)], W);
+  }
+  // spawn bays: painted grid boxes facing the centre, with chevrons in front
+  for (const [x, z] of SPAWNS) {
+    const yaw = Math.atan2(-x, -z), fx = Math.sin(yaw), fz = Math.cos(yaw), rx = fz, rz = -fx;
+    const L = (a, b) => [x + rx * a + fx * b, z + rz * a + fz * b];
+    seg(L(-2.3, -3.54), L(-2.3, 2.6), 0.28, W); seg(L(2.3, -3.54), L(2.3, 2.6), 0.28, W);
+    seg(L(-2.44, -3.4), L(2.44, -3.4), 0.28, W);
+    for (const b0 of [3.7, 5.0]) poly([[-1.1, 0], [0, 0.85], [1.1, 0], [1.1, -0.42], [0, 0.43], [-1.1, -0.42]].map(([a, b]) => L(a, b + b0)), Y);
+  }
+  const geo = mergeGeometries(parts);
+  const p = geo.attributes.position, uv = geo.attributes.uv; // planar UVs so the wear texture tiles evenly
+  for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / 6, p.getZ(i) / 6);
+  const wear = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 1400; i++) { g.fillStyle = `rgba(70,74,84,${ar(0.1, 0.4)})`; const s = ar(1, 3.5); g.fillRect(Math.random() * w, Math.random() * h, s, s); }
+    g.lineCap = 'round';
+    for (let i = 0; i < 26; i++) { g.strokeStyle = `rgba(60,64,72,${ar(0.08, 0.2)})`; g.lineWidth = ar(2, 6); g.beginPath(); const x = ar(0, w), y = ar(0, h); g.moveTo(x, y); g.lineTo(x + ar(-60, 60), y + ar(-20, 20)); g.stroke(); }
+  }, 1);
+  const paint = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: wear, vertexColors: true, roughness: 0.7, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+  paint.position.y = 0.02; paint.receiveShadow = true; scene.add(paint);
 })();
+
+// ---- perimeter: rounded red/white barrier blocks on the wall line, tyre stacks in the corners, ad boards behind
+(function buildWalls() {
+  const n = 31, span = HALF - 1.1, len = span * 2 / n, red = new THREE.Color('#DE4436'), white = new THREE.Color('#F0EDE6'), tyre = new THREE.Color('#2A2D33');
+  let block = new RoundedBoxGeometry(len - 0.12, 1.6, 1.2, 2, 0.24); const parts = [];
+  if (block.index) block = block.toNonIndexed();
+  for (let k = 0; k < 4; k++) for (let i = 0; i < n; i++) {
+    const [x, z] = rot90(-span + len * (i + 0.5), HALF, k), g = block.clone();
+    g.rotateY(-k * Math.PI / 2); g.translate(x, 0.8, z); parts.push(tintGeo(g, (i + k) % 2 ? red : white));
+  }
+  const tor = new THREE.TorusGeometry(0.86, 0.4, 8, 20).toNonIndexed(); tor.rotateX(Math.PI / 2); // RoundedBoxGeometry is non-indexed too
+  for (let k = 0; k < 4; k++) {
+    const [x, z] = rot90(HALF + 0.5, HALF + 0.5, k);
+    for (let j = 0; j < 3; j++) { const g = tor.clone(); g.translate(x, 0.4 + j * 0.76, z); parts.push(tintGeo(g, j === 2 ? white : tyre)); }
+  }
+  const walls = new THREE.Mesh(mergeGeometries(parts), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 }));
+  walls.castShadow = walls.receiveShadow = true; scene.add(walls);
+
+  // advertising boards: one texture atlas (5 boards + a dark strip for edges and posts), one mesh
+  const RH = 200, AT = 1024;
+  const ads = canvasTex(AT, AT, (g, w) => {
+    const row = (r, bg, fg, text, deco) => {
+      const y = r * RH; g.fillStyle = bg; g.fillRect(0, y, w, RH);
+      if (deco) deco(y);
+      g.font = '900 118px "Arial Black", "Arial Bold", Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      const tw = g.measureText(text).width, sx = Math.min(1, (w - 150) / tw);
+      g.save(); g.translate(w / 2, y + RH / 2 + 6); g.scale(sx, 1); g.fillStyle = fg; g.fillText(text, 0, 0); g.restore();
+      g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 10; g.strokeRect(5, y + 5, w - 10, RH - 10);
+    };
+    const checks = y => { for (const x0 of [0, w - 60]) for (let i = 0; i < 3; i++) for (let j = 0; j < 7; j++) if ((i + j) % 2) { g.fillStyle = '#F5F1E6'; g.fillRect(x0 + i * 20, y + j * 29, 20, 29); } };
+    const stripes = col => y => { g.fillStyle = col; for (let i = -2; i < 14; i++) { g.beginPath(); g.moveTo(i * 80, y + RH); g.lineTo(i * 80 + 40, y + RH); g.lineTo(i * 80 + 100, y); g.lineTo(i * 80 + 60, y); g.fill(); } };
+    row(0, '#23304A', '#F2B134', 'SCRAP KARTS', checks);
+    row(1, '#E8553E', '#FFF4DC', 'BONK!', stripes('rgba(255,255,255,.12)'));
+    row(2, '#F2B134', '#23304A', 'GRAB A BOX', null);
+    row(3, '#F5F1E6', '#E8553E', 'TURBO SCRAP', stripes('rgba(232,85,62,.10)'));
+    row(4, '#1F8A8A', '#F5F1E6', 'FULL THROTTLE', checks);
+    g.fillStyle = '#2B2F3A'; g.fillRect(0, 5 * RH, w, AT - 5 * RH);
+  });
+  const vOf = y => 1 - y / AT, dark = vOf(5 * RH + 12);
+  const panel = new THREE.BoxGeometry(7.3, 1.45, 0.16), post = new THREE.BoxGeometry(0.18, 2.5, 0.18), boards = [];
+  const D = HALF + 2.3, slots = [];
+  for (let u = -56; u <= 56; u += 8) slots.push(u);
+  let r = 0;
+  for (let k = 0; k < 4; k++) for (const u of slots) {
+    const row = r++ % 5, g = panel.clone(), uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) {
+      if (i >= 16) uv.setY(i, vOf((row + 1) * RH - 6) + uv.getY(i) * (vOf(row * RH + 6) - vOf((row + 1) * RH - 6))); // front and back faces show the ad
+      else uv.setXY(i, 0.5, dark);
+    }
+    const [x, z] = rot90(u, D, k);
+    g.translate(0, 1.72, 0); g.rotateY(-k * Math.PI / 2); g.translate(x, 0, z); boards.push(g);
+    for (const s of [-3.2, 3.2]) {
+      const pg = post.clone(), puv = pg.attributes.uv; for (let i = 0; i < puv.count; i++) puv.setXY(i, 0.5, dark);
+      const [px, pz] = rot90(u + s, D + 0.17, k); pg.translate(px, 1.25, pz); boards.push(pg);
+    }
+  }
+  const adMesh = new THREE.Mesh(mergeGeometries(boards), new THREE.MeshStandardMaterial({ map: ads, roughness: 0.6, metalness: 0 }));
+  adMesh.castShadow = true; adMesh.receiveShadow = true; scene.add(adMesh);
+})();
+
+// ---- distant scenery: tree line, hills, mountains and a far city (procedural, always present)
+const sceneryCore = new THREE.Group(), sceneryDetail = new THREE.Group(); // detail is hidden on Low quality
+scene.add(sceneryCore, sceneryDetail);
+(function buildFarScenery() {
+  const pos = [], col = [], c = new THREE.Color();
+  const addGeo = (geo, color) => { const g = geo.index ? geo.toNonIndexed() : geo, p = g.attributes.position.array; for (let i = 0; i < p.length; i += 3) { pos.push(p[i], p[i + 1], p[i + 2]); col.push(color.r, color.g, color.b); } };
+  const tri = (a, b, d, color, want) => { // keep the face pointing towards `want`
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = d[0] - a[0], vy = d[1] - a[1], vz = d[2] - a[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    if (nx * want[0] + ny * want[1] + nz * want[2] < 0) [b, d] = [d, b];
+    pos.push(...a, ...b, ...d); for (let i = 0; i < 3; i++) col.push(color.r, color.g, color.b);
+  };
+  const ridge = (rIn, rCrest, rOut, hMin, hMax, freq, seed, colA, colB, segs) => {
+    const H = a => hMin + (hMax - hMin) * clamp((fbm(Math.cos(a) * freq + 40, Math.sin(a) * freq + 40, seed) - 0.25) / 0.5, 0, 1);
+    const ca = new THREE.Color(colA), cb = new THREE.Color(colB);
+    for (let i = 0; i < segs; i++) {
+      const a0 = i / segs * TAU, a1 = (i + 1) / segs * TAU, h0 = H(a0), h1 = H(a1);
+      const P = (a, r, y) => [Math.cos(a) * r, y, Math.sin(a) * r];
+      const rc0 = rCrest + (vnoise(i * 0.7, 3, seed) - 0.5) * 30, rc1 = rCrest + (vnoise((i + 1) * 0.7, 3, seed) - 0.5) * 30;
+      const in0 = P(a0, rIn, -3), in1 = P(a1, rIn, -3), c0 = P(a0, rc0, h0), c1 = P(a1, rc1, h1), o0 = P(a0, rOut, h0 * 0.35), o1 = P(a1, rOut, h1 * 0.35);
+      const am = (a0 + a1) / 2, inward = [-Math.cos(am), 0.6, -Math.sin(am)], outward = [Math.cos(am), 0.6, Math.sin(am)];
+      c.copy(ca).lerp(cb, arenaRand() * 0.6); tri(in0, c0, c1, c, inward);
+      c.copy(ca).lerp(cb, arenaRand() * 0.6); tri(in0, c1, in1, c, inward);
+      c.copy(cb); tri(c0, o0, o1, c, outward); tri(c0, o1, c1, c, outward);
+    }
+  };
+  // tree line (low-poly cones)
+  const cone = new THREE.ConeGeometry(1, 1, 7); cone.translate(0, 0.5, 0);
+  const greens = ['#3D7448', '#4A8550', '#356640', '#58905A'].map(s => new THREE.Color(s));
+  for (let i = 0; i < 300; i++) {
+    const a = ar(0, TAU), r = ar(205, 275), h = ar(14, 32), w = h * ar(0.26, 0.36), g = cone.clone();
+    g.scale(w, h, w); g.translate(Math.cos(a) * r, -1, Math.sin(a) * r);
+    addGeo(g, c.copy(greens[i % 4]).multiplyScalar(ar(0.85, 1.1)));
+  }
+  ridge(275, 305, 360, 8, 34, 3.2, 21, '#5E9A58', '#4F8450', 160);
+  ridge(420, 480, 560, 28, 95, 2.2, 5, '#7C93A8', '#6D8399', 140);
+  // far city skyline in one direction
+  const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
+  for (let i = 0; i < 46; i++) {
+    const a = ar(3.55, 4.25), r = ar(330, 390), g = box.clone();
+    g.scale(ar(9, 22), ar(16, 66) * (1 - Math.abs(a - 3.9) * 0.9), ar(9, 22)); g.rotateY(-a); g.translate(Math.cos(a) * r, -1, Math.sin(a) * r);
+    addGeo(g, c.set('#93A2B4').multiplyScalar(ar(0.85, 1.08)));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const far = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0 }));
+  far.matrixAutoUpdate = false; sceneryCore.add(far);
+})();
+
+// ---- venue around the arena: Kenney Racing Kit (CC0, assets/racing-kit), merged per material.
+// Tall props stay >= 84 units from the centre so the chase camera (at most ~81 out) never sits behind them.
+(function buildVenue() {
+  const plan = []; // [file, x, z, yaw, scale, detail]
+  const at = (file, u, v, k, yaw, s, detail = false) => { const [x, z] = rot90(u, v, k); plan.push([file, x, z, yaw - k * Math.PI / 2, s, detail]); };
+  const S = 13;
+  for (const u of [-26, -13, 0, 13, 26]) at('grandStandCovered', u, 91, 0, Math.PI, S);
+  for (const u of [-26, -13, 0, 13, 26]) at(u % 26 ? 'pitsGarageClosed' : 'pitsGarage', u, 90, 1, Math.PI, S);
+  at('pitsOffice', -39, 90, 1, Math.PI, S); at('pitsOffice', 39, 90, 1, Math.PI, S);
+  for (const u of [-26, -13, 0, 13, 26]) at('grandStand', u, 91, 2, Math.PI, S);
+  for (const u of [-26, 26]) at('tentLong', u, 90, 3, 0, S);
+  at('tentClosedLong', 0, 90, 3, 0, S);
+  for (let k = 0; k < 4; k++) {
+    at('lightPostLarge', 84, 84, k, Math.PI / 4, 30);
+    at(k % 2 ? 'bannerTowerGreen' : 'bannerTowerRed', -40, 86, k, Math.PI / 2, 12, true);
+    at(k % 2 ? 'bannerTowerRed' : 'bannerTowerGreen', 40, 86, k, Math.PI / 2, 12, true);
+    for (const u of [-48, -34, 34, 48]) at(['flagRed', 'flagGreen', 'flagCheckers'][(u + k * 7 + 100) % 3], u, 86, k, 0, 9, true);
+  }
+  at('billboard', -58, 90, 3, Math.PI, 14, true); at('billboard', 58, 90, 3, Math.PI, 14, true);
+  // trees in a ring behind the venue
+  for (let i = 0; i < 110; i++) {
+    let x, z, tries = 0;
+    do { const a = ar(0, TAU), r = ar(108, 190); x = Math.cos(a) * r; z = Math.sin(a) * r; tries++; }
+    while (tries < 20 && (Math.max(Math.abs(x), Math.abs(z)) < 104 || Math.hypot(Math.abs(x) - 84, Math.abs(z) - 84) < 14));
+    plan.push([arenaRand() < 0.6 ? 'treeLarge' : 'treeSmall', x, z, ar(0, TAU), ar(9, 15), true]);
+  }
+  const PAL = { grey: '#E2E0DA', red: '#DE4436', road: '#4A4E57', grass: '#4E9A6C', bark: '#B78A5C', glass: '#5A7590', _defaultMat: '#D6D6DC', pylon: '#F2B134' };
+  const mats = {};
+  const logo = () => { // replaces the kit's sponsor banner (256x128 image, glTF UVs) with the game's own
+    const t = canvasTex(512, 256, (g, w, h) => {
+      g.fillStyle = '#23304A'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#F2B134'; g.beginPath(); g.arc(92, h / 2, 50, 0, TAU); g.fill();
+      g.fillStyle = '#23304A'; g.beginPath(); g.arc(92, h / 2, 24, 0, TAU); g.fill();
+      g.fillStyle = '#E8553E'; g.beginPath(); g.arc(92, h / 2, 12, 0, TAU); g.fill();
+      g.fillStyle = '#F5F1E6'; g.font = '900 54px "Arial Black", "Arial Bold", Arial, sans-serif'; g.textBaseline = 'middle';
+      g.fillText('SCRAP', 166, h / 2 - 28); g.fillStyle = '#F2B134'; g.fillText('KARTS', 166, h / 2 + 32);
+    });
+    t.flipY = false; t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+  };
+  const matFor = src => {
+    const key = src.name || 'x';
+    if (!mats[key]) mats[key] = key === 'tankco' ? new THREE.MeshStandardMaterial({ map: logo(), roughness: 0.7, metalness: 0 })
+      : src.map ? new THREE.MeshStandardMaterial({ map: src.map, roughness: 0.8, metalness: 0 })
+      : lam(PAL[key] || '#' + src.color.getHexString(), { roughness: 0.85 });
+    return mats[key];
+  };
+  const clean = g => { // position/normal/uv only, non-indexed, so everything merges
+    const n = g.index ? g.toNonIndexed() : g, out = new THREE.BufferGeometry();
+    out.setAttribute('position', n.attributes.position);
+    if (n.attributes.normal) out.setAttribute('normal', n.attributes.normal);
+    out.setAttribute('uv', n.attributes.uv || new THREE.BufferAttribute(new Float32Array(n.attributes.position.count * 2), 2));
+    if (!n.attributes.normal) out.computeVertexNormals();
+    return out;
+  };
+  const loader = new GLTFLoader(), files = [...new Set(plan.map(p => p[0]))];
+  Promise.allSettled(files.map(f => loader.loadAsync('assets/racing-kit/' + f + '.glb'))).then(res => {
+    const models = {};
+    res.forEach((r, i) => {
+      if (r.status !== 'fulfilled') return;
+      const root = r.value.scene; root.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(root), cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2, parts = [];
+      root.traverse(o => { if (o.isMesh) { const g = clean(o.geometry.clone().applyMatrix4(o.matrixWorld)); g.translate(-cx, -bb.min.y, -cz); parts.push({ g, mat: o.material }); } });
+      models[files[i]] = parts;
+    });
+    if (!Object.keys(models).length) { // kit unavailable: simple low-poly trees on the same spots, the rest is procedural anyway
+      const parts = [], cone = new THREE.ConeGeometry(0.42, 1.1, 7).toNonIndexed(), trunk = new THREE.CylinderGeometry(0.06, 0.08, 0.45, 6).toNonIndexed();
+      cone.translate(0, 0.95, 0); trunk.translate(0, 0.22, 0);
+      const leaf = new THREE.Color('#4E9A6C'), bark = new THREE.Color('#B78A5C');
+      for (const [file, x, z, , s] of plan) {
+        if (!file.startsWith('tree')) continue;
+        const sc = file === 'treeLarge' ? s : s * 0.72;
+        for (const [g0, c0] of [[cone, leaf], [trunk, bark]]) { const g = g0.clone(); g.scale(sc, sc, sc); g.translate(x, 0, z); parts.push(tintGeo(g, c0)); }
+      }
+      const m = new THREE.Mesh(mergeGeometries(parts), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9, metalness: 0 }));
+      m.matrixAutoUpdate = false; sceneryDetail.add(m);
+    }
+    const buckets = new Map(), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), UPV = new THREE.Vector3(0, 1, 0);
+    for (const [file, x, z, yaw, s, detail] of plan) {
+      const parts = models[file]; if (!parts) continue;
+      m4.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(UPV, yaw), new THREE.Vector3(s, s, s));
+      for (const { g, mat } of parts) {
+        const key = (detail ? 'd|' : 'c|') + (mat.name || 'x');
+        if (!buckets.has(key)) buckets.set(key, { mat, list: [] });
+        buckets.get(key).list.push(g.clone().applyMatrix4(m4));
+      }
+    }
+    for (const [key, { mat, list }] of buckets) {
+      const mesh = new THREE.Mesh(mergeGeometries(list), matFor(mat));
+      mesh.matrixAutoUpdate = false; (key[0] === 'd' ? sceneryDetail : sceneryCore).add(mesh);
+    }
+  });
+})();
+onQuality(level => { // Low: no trees/flags/banner towers, no tarmac bump and roughness detail
+  const high = level === 'high', fm = floor.material;
+  sceneryDetail.visible = high;
+  if (!!fm.bumpMap !== high) { fm.bumpMap = high ? grainTex : null; fm.roughnessMap = high ? grainTex : null; fm.roughness = high ? 1 : 0.9; fm.needsUpdate = true; }
+});
 
 /* =========================================================================
    MODELS: obstacles (containers, crates, tyre stacks) and karts.
