@@ -215,7 +215,7 @@ const DRIVE = {
                             // slide; below ~0.45 it starts losing speed; 0 = pure low-grip slide, which spins out
   DRIFT_BODY_ANGLE: 20,     // degrees the body visually angles into the slide
   DRIFT_LEAN_RATE: 10,      // how fast the body eases to/from that angle (1/s)
-  DRIFT_BOOST: true,        // speed boost on exit from a long drift
+  DRIFT_BOOST: true,        // speed boost when the player releases the turn after a long drift
   DRIFT_BOOST_MIN_TIME: 1.0,// drift must last longer than this (s)
   DRIFT_BOOST_SPEED: 4,     // extra speed
   DRIFT_BOOST_TIME: 0.6,    // s at full boost
@@ -711,8 +711,10 @@ function drive(k, thr, steer, dt, now) {
   if (dir !== k.steerDir) { k.steerDir = dir; k.steerHold = dir ? dt : 0; } else if (dir) k.steerHold += dt;
   if (k.drift) {
     k.driftT += dt;
-    if (dir !== k.drift || Math.hypot(k.vx, k.vz) < D.DRIFT_END_SPEED * top || frozen) {
-      if (D.DRIFT_BOOST && !frozen && k.driftT > D.DRIFT_BOOST_MIN_TIME) {
+    const released = dir !== k.drift; // turn let go, or switched to the other direction
+    if (released || Math.hypot(k.vx, k.vz) < D.DRIFT_END_SPEED * top || frozen) {
+      // boost only when the player ends the drift by releasing the turn, not when it dies from slowing down
+      if (D.DRIFT_BOOST && released && !frozen && k.driftT > D.DRIFT_BOOST_MIN_TIME) {
         k.boostT = D.DRIFT_BOOST_TIME + D.DRIFT_BOOST_FADE;
         k.vx += fx * D.DRIFT_BOOST_SPEED; k.vz += fz * D.DRIFT_BOOST_SPEED;
       }

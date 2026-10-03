@@ -186,6 +186,17 @@ test('drift: boost after >1 s, none for short drifts, toggle works', () => {
   assert.strictEqual(off.boostT, 0, 'toggle off: no boost');
   assert.ok(long.v > 26 + 3.5, `boosted speed ${long.v}`);
   assert.ok(off.v <= 26 + 1e-9, `unboosted speed ${off.v}`);
+  // no boost when a long drift dies from slowing down (braking while still holding the turn)
+  {
+    const r = driftRig(); r.steps(18 + 90, 1, 1); assert.strictEqual(r.k.drift, 1); // 1.5 s drift
+    let n = 0, prev = Math.hypot(r.k.vx, r.k.vz), jumped = false;
+    while (r.k.drift && n++ < 600) { r.steps(1, -1, 1); const v = Math.hypot(r.k.vx, r.k.vz); if (v > prev + 0.5) jumped = true; prev = v; }
+    assert.strictEqual(r.k.drift, 0, 'drift ended by slowing down');
+    assert.strictEqual(r.k.boostT, 0, 'no boost on a speed-out exit');
+    assert.strictEqual(jumped, false, 'no forward shove while braking');
+  }
+  // counter-steering out of a long drift counts as releasing the turn: boost
+  { const r = driftRig(); r.steps(18 + 70, 1, 1); r.steps(1, 1, -1); assert.ok(r.k.boostT > 0, 'boost on counter-steer exit'); }
   // the 1 s boundary: a drift exits on the release step, so held steps + 1 = drift duration in steps
   const boostAfter = heldSteps => { const r = driftRig(); r.steps(18 + heldSteps, 1, 1); r.steps(1, 1, 0); return r.k.boostT; };
   assert.strictEqual(boostAfter(56), 0, '0.95 s drift: no boost');
