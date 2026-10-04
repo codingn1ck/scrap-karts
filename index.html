@@ -470,6 +470,13 @@ const DRIVE = {
   REMOTE_DRIFT_STALE_MS: 500, // drop another player's drift visuals if their state is older than this
 };
 
+/* ---------- world config: health, gravity, terrain ---------- */
+const WORLD = {
+  HP_MAX: 100,        // every kart's health; weapons deal damage against this (see DEF.dmg)
+  GRAVITY: 32,        // units/s^2 for karts in the air and for lobbed shots
+  STEP_UP: 0.6,       // highest ledge a kart can drive straight up; anything taller is a wall
+  SHOT_FLY_Y: 1.1,    // straight shots fly this far above the firing kart
+};
 const ROUND_MS = 180000, BREAK_MS = 15000, PERIOD = ROUND_MS + BREAK_MS;
 const RESPAWN_MS = 3000, PROTECT_MS = 2000, BOX_RESPAWN = 6000;
 const KART_R = 1.5, HALF = 64, WALL_IN = HALF - 0.6;
@@ -486,20 +493,32 @@ addObs(36, 0, 5, 22, 4, 'container', '#7A4FB8'); addObs(-36, 0, 5, 22, 4, 'conta
 [[50, 14], [-50, -14], [14, -50], [-14, 50]].forEach(([x, z]) => addObs(x, z, 4, 4, 3.2, 'tires', '#2E2E36'));
 const BOX_SPOTS = [[0, 0], [0, 22], [0, -22], [22, 0], [-22, 0], [30, 30], [-30, 30], [30, -30], [-30, -30], [0, 52], [0, -52], [52, 0], [-52, 0]];
 const SPAWNS = [[56, 56], [-56, 56], [56, -56], [-56, -56], [26, 58], [-26, -58], [58, -26], [-58, 26]];
+// Raised and sunken ground. Flat ground is y = 0. Each entry is an axis-aligned rectangle (centre x,z; size w,d):
+//   { x, z, w, d, y }                                  plateau (pit when y < 0): flat top at height y
+//   { x, z, w, d, y0, y1, dir: 'x' | '-x' | 'z' | '-z' } ramp: height runs from y0 (low end) to y1 (high end), rising toward +dir
+// groundY(x, z) in the physics section returns the height of the highest entry containing the point, else 0.
+// Ledges taller than WORLD.STEP_UP act as walls from below; karts drive off edges and fall.
+const TERRAIN = [];
 
 /* ---------- weapons ---------- */
+// id -> label, charges per pickup, drop weight, HUD hint. DEF (below) holds each shot type's numbers.
+// ROUND-2 NOTE: cannon, machinegun and fakebox are placeholders until the weapon engine lands
+// (they currently fire like grenuke, bullets and mines respectively).
 const WEAPONS = {
-  rocket:  { label: 'Rocket',        ch: 2, w: 22, icon: '🚀', sub: 'Straight shot' },
-  minigun: { label: 'Minigun',       ch: 5, w: 18, icon: '💥', sub: 'Hold to spray' },
-  mines:   { label: 'Mines',         ch: 3, w: 15, icon: '🧨', sub: 'Drops behind you' },
-  lob:     { label: 'Lob bomb',      ch: 1, w: 12, icon: '💣', sub: 'Arcs, then blows' },
-  frost:   { label: 'Frost blaster', ch: 2, w: 12, icon: '❄️', sub: 'Freeze, then ram' },
-  spikes:  { label: 'Spike ring',    ch: 1, w: 9,  icon: '✴️', sub: 'Touch = smash' },
-  star:    { label: 'Unstoppable',   ch: 1, w: 6,  icon: '⭐', sub: 'Immune + ram' },
-  bigbang: { label: 'Big bang',      ch: 1, w: 6,  icon: '☢️', sub: 'Huge blast' },
+  rockets:    { label: 'Rockets',         ch: 3,  w: 20, sub: 'Slow and heavy' },
+  bullets:    { label: 'Bullets',         ch: 6,  w: 20, sub: 'Triple shot' },
+  machinegun: { label: 'Machine Gun',     ch: 40, w: 14, sub: 'Hold to fire' },
+  snowballs:  { label: 'Snowballs',       ch: 2,  w: 10, sub: 'Freeze, then ram' },
+  cannon:     { label: 'Cannon Balls',    ch: 4,  w: 16, sub: 'Arcs over cover' },
+  grenuke:    { label: 'Lob-Grenuke',     ch: 1,  w: 9,  sub: 'High lob, big bang' },
+  nuke:       { label: 'Nuke',            ch: 1,  w: 3,  sub: 'Huge blast' },
+  mines:      { label: 'Mines',           ch: 3,  w: 12, sub: 'Drops behind you' },
+  spiky:      { label: 'Spiky-Go-Round',  ch: 1,  w: 6,  sub: 'Touch = smash' },
+  star:       { label: 'Star',            ch: 1,  w: 3,  sub: 'Immune + ram' },
+  fakebox:    { label: 'Fake Loot Box',   ch: 1,  w: 3,  sub: 'Looks like a ? box' },
 };
 const W_TOTAL = Object.values(WEAPONS).reduce((s, w) => s + w.w, 0);
-function rollWeapon() { let r = Math.random() * W_TOTAL; for (const k in WEAPONS) { r -= WEAPONS[k].w; if (r <= 0) return k; } return 'rocket'; }
+function rollWeapon() { let r = Math.random() * W_TOTAL; for (const k in WEAPONS) { r -= WEAPONS[k].w; if (r <= 0) return k; } return 'rockets'; }
 const DEF = {
   r: { spd: 55, life: 2600, hit: 1.0, blast: 4.5 },
   n: { spd: 30, life: 3600, hit: 1.4, blast: 13 },
@@ -1606,6 +1625,8 @@ function disposeKart(v) {
   if (v.model) v.model.bodyMat.dispose(); // geometry and the other materials are shared
   if (v.tag) { v.tag.material.map.dispose(); v.tag.material.dispose(); }
 }
+// Health bar above a kart: frac is 0..1 of WORLD.HP_MAX. Implemented with the HUD work; called every frame from update().
+function setHealth(v, frac) {}
 function setTag(v, text) {
   if (v.tag) { v.g.remove(v.tag); v.tag.material.map.dispose(); v.tag.material.dispose(); }
   v.tag = nameSprite(text); v.g.add(v.tag); v.tagText = text;
@@ -1874,7 +1895,7 @@ let myShots = [], myBx = [], myTg = [];
 let myColor = 0;
 
 function makeKartState(key, name, colorIdx, isBot) {
-  return { key, name, colorIdx, isBot, x: 0, z: 0, yaw: 0, ...driveState(), alive: false, deadAt: -1e9, protectUntil: 0,
+  return { key, name, colorIdx, isBot, x: 0, z: 0, yaw: 0, ...driveState(), hp: WORLD.HP_MAX, alive: false, deadAt: -1e9, protectUntil: 0,
     spikeUntil: 0, starUntil: 0, frozenUntil: 0, weapon: null, charges: 0, fireCd: 0, kb: {}, d: 0, lk: '', ai: { nextFire: 0, jit: 0, jitAt: 0 }, view: null };
 }
 function vulnerable(k, now) { return k.alive && now >= k.protectUntil && now >= k.starUntil; }
@@ -1886,18 +1907,18 @@ function respawn(k) {
     let md = 1e9; for (const o of others) md = Math.min(md, Math.hypot(o.x - s[0], o.z - s[1]));
     md += Math.random() * 6; if (md > bd) { bd = md; best = s; }
   }
-  Object.assign(k, { x: best[0], z: best[1], yaw: Math.atan2(-best[0], -best[1]), alive: true, protectUntil: now + PROTECT_MS,
+  Object.assign(k, { x: best[0], z: best[1], yaw: Math.atan2(-best[0], -best[1]), hp: WORLD.HP_MAX, alive: true, protectUntil: now + PROTECT_MS,
     spikeUntil: 0, starUntil: 0, frozenUntil: 0, weapon: null, charges: 0 });
   resetDrive(k); // zero velocity/drift and snap interpolation so the kart doesn't streak across the map
 }
 function localKarts() { const a = started && me ? [me] : []; return bots.length ? a.concat(bots) : a; }
 function allKarts(now) {
   const out = [];
-  for (const k of localKarts()) out.push({ key: k.key, name: k.name, x: k.x, z: k.z, vx: k.vx, vz: k.vz, alive: k.alive, local: true, ref: k,
+  for (const k of localKarts()) out.push({ key: k.key, name: k.name, x: k.x, z: k.z, vx: k.vx, vz: k.vz, hp: k.hp, alive: k.alive, local: true, ref: k,
     spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil });
   for (const R of remotes.values()) {
     const p = R.p; const fx = String(p.fx || '');
-    out.push({ key: R.key, name: R.name, x: R.dx, z: R.dz, vx: +p.vx || 0, vz: +p.vz || 0, alive: !!p.a && p.rd === curRd || (!!p.a && p.rd == null), local: false, ref: R,
+    out.push({ key: R.key, name: R.name, x: R.dx, z: R.dz, vx: +p.vx || 0, vz: +p.vz || 0, hp: p.hp == null ? WORLD.HP_MAX : clamp(+p.hp || 0, 0, WORLD.HP_MAX), alive: !!p.a && p.rd === curRd || (!!p.a && p.rd == null), local: false, ref: R,
       spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u') });
   }
   return out;
@@ -1910,6 +1931,8 @@ function nameOf(key) {
 }
 
 /* ---------- physics ---------- */
+// Ground height at a point (TERRAIN plateaus and ramps; flat ground is 0). Implemented with the terrain work.
+function groundY(x, z) { return 0; }
 function solidAt(x, z, pad) {
   if (Math.abs(x) > WALL_IN - pad || Math.abs(z) > WALL_IN - pad) return true;
   for (const o of OBST) if (Math.abs(x - o.x) < o.w / 2 + pad && Math.abs(z - o.z) < o.d / 2 + pad) return true;
@@ -2028,11 +2051,11 @@ function fire(k, now) {
   if (!k.alive || !k.weapon || now < k.fireCd || now < k.frozenUntil) return;
   const w = k.weapon, fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
   let type = null, ox = k.x + fx * 2.7, oz = k.z + fz * 2.7;
-  if (w === 'rocket') type = 'r'; else if (w === 'minigun') type = 'g'; else if (w === 'frost') type = 'f';
-  else if (w === 'bigbang') type = 'n'; else if (w === 'lob') type = 'l';
-  else if (w === 'mines') { type = 'm'; ox = k.x - fx * 2.9; oz = k.z - fz * 2.9; }
-  else if (w === 'spikes') { k.spikeUntil = now + 7000; sfx('power', k); }
-  else if (w === 'star') { k.starUntil = now + 6000; k.frozenUntil = 0; sfx('power', k); }
+  if (w === 'rockets') type = 'r'; else if (w === 'bullets' || w === 'machinegun') type = 'g'; else if (w === 'snowballs') type = 'f';
+  else if (w === 'nuke') type = 'n'; else if (w === 'grenuke' || w === 'cannon') type = 'l';
+  else if (w === 'mines' || w === 'fakebox') { type = 'm'; ox = k.x - fx * 2.9; oz = k.z - fz * 2.9; }
+  else if (w === 'spiky') { k.spikeUntil = now + 6000; sfx('power', k); }
+  else if (w === 'star') { k.starUntil = now + 5000; k.frozenUntil = 0; sfx('power', k); }
   if (type) {
     const n = ++shotN, key = k.key + '#' + n;
     spawnShot(k.key, type, ox, oz, k.yaw, 0, key);
@@ -2040,7 +2063,7 @@ function fire(k, now) {
     sfx(type === 'g' ? 'gun' : type === 'm' ? 'drop' : 'fire', k);
   }
   if (--k.charges <= 0) { k.weapon = null; k.charges = 0; }
-  k.fireCd = now + (w === 'minigun' ? 170 : 320);
+  k.fireCd = now + (w === 'machinegun' ? 90 : w === 'bullets' ? 170 : 320);
 }
 let FF = false; // fast-forwarding a late-arriving shot: no kills, no effects
 function spawnShot(owner, type, x, z, yaw, age, key) {
@@ -2138,6 +2161,15 @@ function kill(V, killerKey) {
   pushFeed(nameOf(killerKey), V === me ? 'you' : V.name, killerKey === (me && me.key) || V === me);
   if (me && killerKey === me.key && V !== me) { toast('You smashed ' + V.name); sfx('score'); }
 }
+// Take `amount` off V's health; smash it when health runs out. Only local karts (ours and the bots)
+// take damage here: every browser is the authority for its own kart, as with kills.
+function damage(V, amount, attackerKey, now) {
+  if (!vulnerable(V, now) || amount <= 0) return false;
+  if (now < V.spikeUntil) amount *= 0.9; // Spiky-Go-Round: 10% damage reduction
+  V.hp = Math.max(0, V.hp - amount);
+  if (V.hp <= 0) { kill(V, attackerKey); return true; }
+  return false;
+}
 function contactKills(karts, now) {
   for (const V of localKarts()) {
     if (!V.alive || now < V.starUntil || now < V.protectUntil) continue;
@@ -2171,7 +2203,7 @@ function botThink(b, dt, now, karts) {
     let best = null, bd = 1e9;
     for (const bx of boxes) { if (now < bx.availableAt) continue; const d = Math.hypot(bx.x - b.x, bx.z - b.z); if (d < bd) { bd = d; best = bx; } }
     if (best) { tx = best.x; tz = best.z; } else if (E) { tx = E.x; tz = E.z; }
-  } else if (b.weapon === 'mines') {
+  } else if (b.weapon === 'mines' || b.weapon === 'fakebox') {
     if (!ai.wp || Math.hypot(ai.wp[0] - b.x, ai.wp[1] - b.z) < 6) ai.wp = BOX_SPOTS[Math.floor(Math.random() * BOX_SPOTS.length)];
     tx = ai.wp[0]; tz = ai.wp[1];
   } else if (E) { tx = E.x + E.vx * dE / 70; tz = E.z + E.vz * dE / 70; }
@@ -2189,10 +2221,10 @@ function botThink(b, dt, now, karts) {
   let fire = false;
   if (b.weapon && E && now > ai.nextFire) {
     const w = b.weapon, ad = Math.abs(wrap(want - b.yaw));
-    if ((w === 'rocket' || w === 'minigun' || w === 'frost' || w === 'bigbang') && ad < 0.13 && dE < 42) fire = true;
-    else if (w === 'lob' && ad < 0.3 && dE > 8 && dE < 22) fire = true;
-    else if (w === 'mines') { const back = Math.abs(wrap(Math.atan2(E.x - b.x, E.z - b.z) - b.yaw)) > 2.4; if ((back && dE < 18) || Math.random() < dt * 0.25) fire = true; }
-    else if ((w === 'spikes' || w === 'star') && dE < 20) fire = true;
+    if ((w === 'rockets' || w === 'bullets' || w === 'machinegun' || w === 'snowballs' || w === 'nuke') && ad < 0.13 && dE < 42) fire = true;
+    else if ((w === 'grenuke' || w === 'cannon') && ad < 0.3 && dE > 8 && dE < 22) fire = true;
+    else if (w === 'mines' || w === 'fakebox') { const back = Math.abs(wrap(Math.atan2(E.x - b.x, E.z - b.z) - b.yaw)) > 2.4; if ((back && dE < 18) || Math.random() < dt * 0.25) fire = true; }
+    else if ((w === 'spiky' || w === 'star') && dE < 20) fire = true;
     if (fire) ai.nextFire = now + rand(250, 800);
   }
   return { thr, steer, fire };
@@ -2273,7 +2305,7 @@ function buildPresence(now) {
   myTg = myTg.filter(t => now - t.t < 8000).slice(-10);
   const fx = (now < me.spikeUntil ? 'k' : '') + (now < me.starUntil ? 's' : '') + (now < me.frozenUntil ? 'f' : '') + (now < me.protectUntil ? 'u' : '');
   // presence keys must be plain identifiers, so maps travel as [key, value] pairs
-  return { v: 1, n: me.name, c: me.colorIdx, x: r1(me.x), z: r1(me.z), y: r2(me.yaw), vx: r1(me.vx), vz: r1(me.vz), a: me.alive ? 1 : 0, fx, dr: me.drift,
+  return { v: 1, n: me.name, c: me.colorIdx, x: r1(me.x), z: r1(me.z), y: r2(me.yaw), vx: r1(me.vx), vz: r1(me.vz), a: me.alive ? 1 : 0, hp: Math.round(me.hp), fx, dr: me.drift,
     rd: curRd, kb: Object.entries(me.kb), d: me.d, lk: me.lk, sh: myShots.map(s => s.e), bx: myBx.map(b => [b.i, b.t]), tg: myTg.map(t => t.k), ts: now };
 }
 
@@ -2300,15 +2332,17 @@ function standings() {
 // Icons are inline SVG (24x24, drawn in currentColor), so they look the same on every device.
 const svgIcon = body => `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 const WEAPON_ICONS = {
-  rocket: svgIcon('<g transform="rotate(45 12 12)"><path d="M12 2.5c2.8 2 4.3 5.2 4.3 9V16H7.7v-4.5c0-3.8 1.5-7 4.3-9z"/><circle cx="12" cy="9.3" r="1.6"/><path d="M7.7 12.5 5 15.2v3.3l2.7-1.4M16.3 12.5l2.7 2.7v3.3l-2.7-1.4M10.2 19.2 12 22l1.8-2.8"/></g>'),
-  minigun: svgIcon('<path d="M2.5 8.5h11M2.5 12h11M2.5 15.5h11"/><rect x="13.5" y="6" width="7" height="12" rx="2"/><path d="M17 18v3"/>'),
+  rockets: svgIcon('<g transform="rotate(45 12 12)"><path d="M12 2.5c2.8 2 4.3 5.2 4.3 9V16H7.7v-4.5c0-3.8 1.5-7 4.3-9z"/><circle cx="12" cy="9.3" r="1.6"/><path d="M7.7 12.5 5 15.2v3.3l2.7-1.4M16.3 12.5l2.7 2.7v3.3l-2.7-1.4M10.2 19.2 12 22l1.8-2.8"/></g>'),
+  bullets: svgIcon('<path d="M2.5 8.5h11M2.5 12h11M2.5 15.5h11"/><rect x="13.5" y="6" width="7" height="12" rx="2"/><path d="M17 18v3"/>'),
   mines: svgIcon('<path d="M3 19h18"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/><path d="M12 12.5V9.8"/><circle cx="12" cy="7.4" r="1.5" fill="currentColor" stroke="none"/><path d="M8 5.8 6.8 4.6M16 5.8l1.2-1.2"/>'),
-  lob: svgIcon('<circle cx="10.5" cy="14" r="6.5"/><path d="M15.2 9.3l2.2-2.2"/><path d="M19.2 3.4v1.6M22 6.4h-1.6M21.2 4.2l-1.1 1.1"/><path d="M7.4 13.2a3.3 3.3 0 0 1 2.4-2.6"/>'),
-  frost: svgIcon('<path stroke-width="1.8" d="M12 2.5v19M3.77 7.25l16.46 9.5M3.77 16.75l16.46-9.5M9.4 3.5 12 5.7l2.6-2.2M9.4 20.5 12 18.3l2.6 2.2M18.06 5.5l-.6 3.35 3.2 1.15M20.66 14l-3.2 1.15.6 3.35M5.94 18.5l.6-3.35-3.2-1.15M3.34 10l3.2-1.15-.6-3.35"/>'),
-  spikes: svgIcon('<polygon stroke-width="1.8" points="12 2 14.53 5.9 19.07 4.93 18.1 9.47 22 12 18.1 14.53 19.07 19.07 14.53 18.1 12 22 9.47 18.1 4.93 19.07 5.9 14.53 2 12 5.9 9.47 4.93 4.93 9.47 5.9"/><circle cx="12" cy="12" r="2.8"/>'),
+  grenuke: svgIcon('<circle cx="10.5" cy="14" r="6.5"/><path d="M15.2 9.3l2.2-2.2"/><path d="M19.2 3.4v1.6M22 6.4h-1.6M21.2 4.2l-1.1 1.1"/><path d="M7.4 13.2a3.3 3.3 0 0 1 2.4-2.6"/>'),
+  snowballs: svgIcon('<path stroke-width="1.8" d="M12 2.5v19M3.77 7.25l16.46 9.5M3.77 16.75l16.46-9.5M9.4 3.5 12 5.7l2.6-2.2M9.4 20.5 12 18.3l2.6 2.2M18.06 5.5l-.6 3.35 3.2 1.15M20.66 14l-3.2 1.15.6 3.35M5.94 18.5l.6-3.35-3.2-1.15M3.34 10l3.2-1.15-.6-3.35"/>'),
+  spiky: svgIcon('<polygon stroke-width="1.8" points="12 2 14.53 5.9 19.07 4.93 18.1 9.47 22 12 18.1 14.53 19.07 19.07 14.53 18.1 12 22 9.47 18.1 4.93 19.07 5.9 14.53 2 12 5.9 9.47 4.93 4.93 9.47 5.9"/><circle cx="12" cy="12" r="2.8"/>'),
   star: svgIcon('<polygon points="12 3.2 14.53 9.32 21.13 9.83 16.09 14.13 17.64 20.57 12 17.1 6.36 20.57 7.91 14.13 2.87 9.83 9.47 9.32"/>'),
-  bigbang: svgIcon('<polygon stroke-width="1.8" points="12 1.8 13.8 5.86 17.51 3.42 16.84 7.81 21.28 7.76 18.33 11.09 22.1 13.45 17.82 14.66 19.71 18.68 15.46 17.38 14.87 21.79 12 18.4 9.13 21.79 8.54 17.38 4.29 18.68 6.18 14.66 1.9 13.45 5.67 11.09 2.72 7.76 7.16 7.81 6.49 3.42 10.2 5.86"/><circle cx="12" cy="12.2" r="2.6" fill="currentColor" stroke="none"/>'),
+  nuke: svgIcon('<polygon stroke-width="1.8" points="12 1.8 13.8 5.86 17.51 3.42 16.84 7.81 21.28 7.76 18.33 11.09 22.1 13.45 17.82 14.66 19.71 18.68 15.46 17.38 14.87 21.79 12 18.4 9.13 21.79 8.54 17.38 4.29 18.68 6.18 14.66 1.9 13.45 5.67 11.09 2.72 7.76 7.16 7.81 6.49 3.42 10.2 5.86"/><circle cx="12" cy="12.2" r="2.6" fill="currentColor" stroke="none"/>'),
 };
+// temporary aliases until the new badges exist
+WEAPON_ICONS.machinegun = WEAPON_ICONS.bullets; WEAPON_ICONS.cannon = WEAPON_ICONS.grenuke; WEAPON_ICONS.fakebox = WEAPON_ICONS.mines;
 const UI_ICONS = {
   empty: svgIcon('<rect x="3.5" y="3.5" width="17" height="17" rx="3" stroke-width="1.6" stroke-dasharray="3.2 2.6"/><path d="M9.7 9.7a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.4v.5"/><circle cx="12" cy="16.6" r=".5"/>'),
   settings: svgIcon('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
@@ -2555,7 +2589,7 @@ function update(dt) {
   // kart physics runs at a fixed rate; A blends the last two physics states for drawing
   physics.advance(dt);
   const A = physics.alpha;
-  if (started && playing && (firePressed || (fireHeld && me.weapon === 'minigun'))) fire(me, now);
+  if (started && playing && (firePressed || (fireHeld && me.weapon === 'machinegun'))) fire(me, now);
   firePressed = false;
   const karts = allKarts(now);
   // boxes
@@ -2609,7 +2643,7 @@ function frame(t) {
 // Test/debug handle, only with ?debug in the URL (module scope hides everything else).
 if (/[?&]debug(?:[=&]|$)/.test(location.search)) {
   window.SK = {
-    THREE, scene, camera, renderer, DRIVE, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence,
+    THREE, scene, camera, renderer, DRIVE, WORLD, TERRAIN, WEAPONS, DEF, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence, damage, groundY,
     get me() { return me; }, get bots() { return bots; }, get remotes() { return remotes; }, get Net() { return Net; },
     get started() { return started; }, get curRd() { return curRd; }, get fxList() { return fxList; }, get boxes() { return boxes; },
     get physics() { return physics; }, get skidNext() { return skidNext; },
