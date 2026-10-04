@@ -20,6 +20,7 @@
   --hot:#FF5A3C;      /* action: Play, Fire, low time, your kills */
   --gold:#FFC53D;     /* you: your row, your name, Go! */
   --violet:#8F6BFF;   /* items: weapon slot (matches the ? boxes) */
+  --ok:#3FD37A;       /* status only: healthy (health bars go --ok > --gold > --hot) */
   --bg:#0D121C; --panel:rgba(13,18,28,.8); --panel-solid:rgba(13,18,28,.9); --glass:rgba(13,18,28,.7);
   --line:rgba(255,255,255,.1); --fill:rgba(255,255,255,.07);
   --text:#F3F5F9; --muted:#A4ADC0;
@@ -107,12 +108,12 @@ kbd{display:inline-block;min-width:24px;padding:0 6px;margin:0 1px;font:600 12px
 /* ---------- HUD ----------
    One grid fills the safe area; every HUD block sits in its own cell,
    so blocks can never overlap. Desktop: top row = clock | feed | board,
-   bottom row = help | weapon slot. Phones: stacked (see max-width:820px). */
+   bottom row = help | weapon slot | health. Phones: stacked (see max-width:820px). */
 #hud{position:fixed;inset:0;display:grid;pointer-events:none;gap:10px 12px;
   padding:calc(var(--pad) + var(--sat)) calc(var(--pad) + var(--sar)) calc(16px + var(--sab)) calc(var(--pad) + var(--sal));
   grid-template-columns:minmax(0,1fr) minmax(0,440px) minmax(0,1fr);
   grid-template-rows:auto minmax(0,1fr) auto auto;
-  grid-template-areas:"tl feed board" "mid mid mid" "toast toast toast" "help slot .";}
+  grid-template-areas:"tl feed board" "mid mid mid" "toast toast toast" "help slot hp";}
 #hud[hidden],#results[hidden]{display:none}
 #hud > *{min-width:0}
 #tl,#board,#feed{align-self:start}  /* (not on the fixed touch layers: it would shrink them) */
@@ -155,8 +156,8 @@ li.me .sc{color:var(--gold)}
 #feed div.mine{background:var(--hot);border-color:transparent;color:var(--bg);font-weight:600}  /* dark text on --hot: ~6:1 (white is only 3.1:1) */
 #feed div.mine b{color:var(--bg);font-weight:700}
 #feed div.sys{font-style:italic}
-#mid{grid-area:mid;align-self:stretch;display:grid;place-items:start center;padding-top:clamp(4px,4vh,48px);min-height:0}  /* messages sit above your kart, not on it */
-#center{max-width:100%;padding:14px 26px 15px;text-align:center;opacity:0;transform:scale(.96);transition:opacity var(--t) var(--ease),transform var(--t) var(--ease)}
+#mid{grid-area:mid;align-self:stretch;display:grid;place-items:start center;padding-top:clamp(2px,1.2vh,40px);min-height:0}  /* messages sit above your kart, not on it (720 px tall windows have ~118 px to spare) */
+#center{max-width:100%;padding:12px 24px 13px;text-align:center;opacity:0;transform:scale(.96);transition:opacity var(--t) var(--ease),transform var(--t) var(--ease)}
 #center.on{opacity:1;transform:none}
 #bigmsg{font:italic 800 clamp(34px,4.6vw,52px)/1 var(--display);letter-spacing:.01em;text-transform:uppercase;overflow-wrap:anywhere}
 #center.go #bigmsg{color:var(--gold)}
@@ -170,20 +171,44 @@ li.me .sc{color:var(--gold)}
 #help{grid-area:help;align-self:end;justify-self:start;max-width:380px;padding:9px 12px;font-size:13px;color:var(--muted);transition:opacity 250ms var(--ease)}
 #help b{color:var(--text);font-weight:600}
 #slot{grid-area:slot;justify-self:center;align-self:end;display:flex;align-items:center;gap:12px;min-width:240px;max-width:100%;padding:8px 16px 8px 8px}
-#slotIcon{position:relative;flex:none;display:grid;place-items:center;width:52px;height:52px;border-radius:var(--r);background:var(--violet);color:#fff;
-  box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
-#slotIcon svg{width:30px;height:30px}
+/* the weapon badge (round 64 x 64 SVG, see WEAPON_ICONS) is the slot icon itself: 52 px desktop, 44 px phones */
+#slotIcon{position:relative;flex:none;display:grid;place-items:center;width:52px;height:52px;border-radius:50%;color:var(--muted)}
+#slotIcon svg{width:52px;height:52px}
 #slotGlyph,#fireIcon{display:grid;place-items:center}
 #slotCount{position:absolute;top:-7px;right:-7px;min-width:21px;height:21px;padding:0 6px;border-radius:var(--r);background:var(--gold);color:var(--bg);
   font:700 15px/21px var(--display);text-align:center;box-shadow:0 0 0 2px var(--bg)}
 #slotCount:empty{display:none}
-.slotTxt{min-width:0}
+/* hit marker: a small cross-hair that blinks on the badge's corner when a shot of yours lands (onHitMarker) */
+#hitMark{position:absolute;left:-5px;top:-5px;width:18px;height:18px;overflow:hidden;color:var(--gold);opacity:0;transform:scale(.6);
+  transition:opacity 150ms var(--ease),transform 150ms var(--ease)}
+#hitMark svg{width:18px;height:18px;filter:drop-shadow(0 0 2px rgba(13,18,28,.9))}
+#hitMark.on{opacity:1;transform:none}
+.slotTxt{min-width:0;flex:1}
 #slotName{display:block;font:700 22px/1.05 var(--display);letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#slotSub{display:block;margin-top:2px;font-size:12.5px;color:var(--muted)}
-#slot.empty #slotIcon{background:transparent;box-shadow:none;color:var(--muted)}
+/* ammo bar: drains with the charges of multi-shot weapons (Machine Gun's 40 rounds read as a bar, not a number) */
+#slotAmmo{height:4px;margin-top:5px;border-radius:var(--r);background:var(--fill);box-shadow:inset 0 0 0 1px var(--line);overflow:hidden}
+#slotAmmo[hidden]{display:none}
+#slotAmmoFill{height:100%;background:var(--gold);transform-origin:left;transition:transform 150ms var(--ease)}
+#slotSub{display:block;margin-top:3px;font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #slot.empty #slotName{color:var(--muted)}
 #slot.flash{animation:pop 220ms var(--ease)}
 #slot.flash #slotIcon{animation:glow 250ms var(--ease)}
+/* your health: heart, bar (--ok > --gold > --hot), number. Low health pulses; a hit flashes the bar white (triggerHit) */
+#hp{grid-area:hp;justify-self:end;align-self:end;display:flex;align-items:center;gap:10px;width:250px;max-width:100%;padding:9px 14px 9px 12px}
+#hpIcon{flex:none;display:grid;place-items:center;color:var(--ok);transition:color var(--t) var(--ease)}
+#hpIcon svg{width:24px;height:24px}
+#hpTrack{flex:1;min-width:0;height:12px;border-radius:var(--r);background:rgba(255,255,255,.1);box-shadow:inset 0 0 0 1px var(--line);overflow:hidden}
+#hpFill{height:100%;background:var(--ok);transform-origin:left;transition:transform var(--t) var(--ease),background-color var(--t) var(--ease)}
+#hpNum{flex:none;min-width:40px;text-align:right;font:700 28px/1 var(--display);font-variant-numeric:tabular-nums;transition:color var(--t) var(--ease)}
+#hp.mid #hpFill{background:var(--gold)} #hp.mid #hpIcon{color:var(--gold)}
+#hp.low #hpFill{background:var(--hot);animation:hpPulse 600ms var(--ease) infinite alternate} #hp.low #hpIcon,#hp.low #hpNum{color:var(--hot)}
+#hp.low #hpIcon svg{animation:hpBeat 600ms var(--ease) infinite alternate}
+#hp.hit #hpFill{background:#fff;transition-duration:60ms}
+#hp.hit #hpIcon{color:#fff;transition-duration:60ms}
+/* damage vignette: red edge glow for a moment when your health drops (a sibling of #hud so the HUD panels stay on top of it) */
+#vignette{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity 200ms var(--ease);
+  background:radial-gradient(ellipse at center,rgba(255,90,60,0) 58%,rgba(255,90,60,.42) 100%);box-shadow:inset 0 0 70px 14px rgba(255,90,60,.55)}
+#vignette.on{opacity:1;transition-duration:60ms}
 #hud.over > :not(#toast){visibility:hidden}
 
 #results{position:fixed;inset:0;z-index:10;display:grid;place-items:center;overflow-y:auto;background:rgba(7,10,17,.55);
@@ -209,7 +234,8 @@ li.me .sc{color:var(--gold)}
   display:none;flex-direction:column;align-items:center;justify-content:center;gap:3px;pointer-events:auto;touch-action:none;cursor:pointer;
   background:var(--hot);color:var(--bg);font:italic 800 17px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;
   box-shadow:0 0 0 4px rgba(255,255,255,.2),0 8px 22px rgba(0,0,0,.35);transition:transform 150ms var(--ease),background-color var(--t) var(--ease),color var(--t) var(--ease)}
-#fireBtn svg{width:30px;height:30px;pointer-events:none}
+#fireBtn svg{width:44px;height:44px;pointer-events:none}
+#fireBtn.dim svg{width:30px;height:30px}
 #fireBtn span{pointer-events:none}
 #fireBtn:active{transform:scale(.93)}
 #fireBtn.dim{background:var(--panel-solid);color:var(--muted);box-shadow:0 0 0 2px rgba(255,255,255,.16),0 8px 22px rgba(0,0,0,.3)}
@@ -220,6 +246,8 @@ li.me .sc{color:var(--gold)}
 @keyframes pop{from{transform:scale(1.1)}to{transform:scale(1)}}
 @keyframes glow{from{box-shadow:0 0 0 8px rgba(143,107,255,.45)}to{box-shadow:0 0 0 0 rgba(143,107,255,0)}}
 @keyframes spin{to{transform:rotate(360deg)}}
+@keyframes hpPulse{from{opacity:1}to{opacity:.5}}
+@keyframes hpBeat{from{transform:scale(1)}to{transform:scale(1.18)}}
 
 @media (pointer:coarse){
   body.playing #touchzone{display:block} body.playing #fireBtn{display:flex} #help{display:none}
@@ -229,29 +257,38 @@ li.me .sc{color:var(--gold)}
 @media (min-width:1600px) and (min-height:900px){
   #timer{font-size:42px;min-width:116px} .iconbtn{width:54px} .iconbtn svg{width:24px;height:24px} #roominfo{font-size:14px}
   #board{width:290px} #board li{height:36px;font-size:16px} #board .sc{font-size:23px} #help{font-size:14px}
-  #feed div{font-size:15px} #slotIcon{width:60px;height:60px} #slotIcon svg{width:34px;height:34px} #slotName{font-size:26px} #slotSub{font-size:13.5px}
+  #feed div{font-size:15px} #slotIcon{width:60px;height:60px} #slotIcon svg{width:60px;height:60px} #slotName{font-size:26px} #slotSub{font-size:13.5px}
+  #hp{width:290px} #hpIcon svg{width:28px;height:28px} #hpTrack{height:14px} #hpNum{font-size:32px;min-width:46px}
 }
 /* phones and narrow windows: stack the HUD top-down, slot under the clock */
 @media (max-width:820px){
   #menu{background:linear-gradient(180deg,rgba(9,13,21,.82) 0,rgba(9,13,21,.7) 55%,rgba(9,13,21,.45) 100%)}
   .menu-inner{margin:auto}
   #hud{--pad:10px;gap:8px;grid-template-columns:minmax(0,1fr) auto;
-    grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
-    grid-template-areas:"tl board" "slot slot" "feed feed" "mid mid" "toast toast" "help help"}
+    grid-template-rows:auto auto auto auto minmax(0,1fr) auto auto;
+    grid-template-areas:"tl board" "hp board" "slot slot" "feed feed" "mid mid" "toast toast" "help help"}  /* health under the clock, beside the board (the board is taller than the clock + room info, so the row costs nothing) */
+  #hp{justify-self:start;align-self:start;width:100%;max-width:230px;gap:8px;padding:6px 10px 6px 9px}
+  #hpIcon svg{width:20px;height:20px} #hpTrack{height:10px} #hpNum{font-size:22px;min-width:34px}
   #timer{font-size:28px;min-width:80px;padding:7px 10px 6px}
   .iconbtn{width:40px}
   #roominfo{padding:6px 10px;font-size:12px}
   #setPanel{width:100%;padding:10px;gap:10px}
   #board{width:178px;padding:5px} #board li{height:27px;gap:7px;padding:0 7px;font-size:13px}
   .sc{font-size:18px} .you{padding:2px 4px 1px;font-size:8.5px}
-  #bigmsg{font-size:32px}
+  #bigmsg{font-size:30px} #submsg{margin-top:4px;font-size:14.5px}
   #slot{justify-self:start;min-width:0;padding:6px 12px 6px 6px;gap:10px}
-  #slotIcon{width:42px;height:42px} #slotIcon svg{width:24px;height:24px}
-  #slotName{font-size:18px} #slotSub{font-size:12px}
+  #slotIcon{width:44px;height:44px} #slotIcon svg{width:44px;height:44px}
+  #slotName{font-size:18px} #slotSub{font-size:12px} #slotAmmo{margin-top:4px}
   #feed div{font-size:12.5px;padding:4px 9px}
-  #center{padding:12px 20px 13px}
+  #center{padding:10px 18px 11px}
   #mid{padding-top:4px}
-  #hud:has(#tl.setopen) #feed{visibility:hidden}  /* the open settings panel pushes the feed onto your kart */
+  #hud:has(#tl.setopen) #feed{display:none}  /* the open settings panel pushes the feed onto your kart (and, on short phones, the centre message onto the toast) */
+  #feed div:nth-last-child(n+3){display:none}  /* newest two feed lines only: four lines push the centre message onto your kart on short phones */
+  #hud:has(#center.on) #feed{display:none}  /* while a centre message shows (Go!, Frozen!) it takes the feed's place, so it stays above your kart */
+}
+/* phones held upright with the settings open: the health bar moves under the board so the taller clock column doesn't push the slot onto your kart */
+@media (max-width:820px) and (min-height:501px){
+  #hud:has(#tl.setopen){grid-template-areas:"tl board" "tl hp" "slot slot" "feed feed" "mid mid" "toast toast" "help help"}
   #toast{font-size:14px}
 }
 @media (max-width:820px) and (pointer:coarse){
@@ -277,8 +314,10 @@ li.me .sc{color:var(--gold)}
 @media (max-height:500px) and (orientation:landscape){
   #hud{--pad:10px;gap:6px 12px;grid-template-columns:minmax(0,1fr) minmax(0,360px) minmax(0,1fr);
     grid-template-rows:auto auto minmax(0,1fr) auto;
-    grid-template-areas:"tl feed board" "tl mid board" ". . board" "slot toast help";padding-bottom:calc(10px + var(--sab))}
+    grid-template-areas:"tl feed board" "tl mid board" "hp . board" "slot toast help";padding-bottom:calc(10px + var(--sab))}
   #mid{align-self:start;padding-top:0}
+  #hp{justify-self:start;align-self:end;width:100%;max-width:220px;gap:8px;padding:6px 10px 6px 9px}
+  #hpIcon svg{width:20px;height:20px} #hpTrack{height:10px} #hpNum{font-size:22px;min-width:34px}
   #center{padding:8px 18px 9px} #bigmsg{font-size:28px} #submsg{margin-top:4px;font-size:14px}
   #feed div:nth-last-child(n+3){display:none}  /* newest two lines only */
   #slot{justify-self:start;min-width:0}
@@ -342,6 +381,7 @@ li.me .sc{color:var(--gold)}
   </div>
 </div>
 
+<div id="vignette"></div>
 <div id="hud" hidden>
   <div id="tl">
     <div class="tl-row">
@@ -356,7 +396,8 @@ li.me .sc{color:var(--gold)}
   </div>
   <ol id="board" class="panel" aria-label="Scoreboard"></ol>
   <div id="feed" aria-live="polite"></div>
-  <div id="slot" class="panel empty"><div id="slotIcon"><span id="slotGlyph"></span><span id="slotCount"></span></div><div class="slotTxt"><span id="slotName">Empty</span><span id="slotSub">Drive through a ? box</span></div></div>
+  <div id="slot" class="panel empty"><div id="slotIcon"><span id="slotGlyph"></span><span id="slotCount"></span><span id="hitMark"></span></div><div class="slotTxt"><span id="slotName">Empty</span><div id="slotAmmo" hidden><div id="slotAmmoFill"></div></div><span id="slotSub">Drive through a ? box</span></div></div>
+  <div id="hp" class="panel" role="meter" aria-label="Health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><span id="hpIcon"></span><div id="hpTrack"><div id="hpFill"></div></div><span id="hpNum">100</span></div>
   <div id="mid"><div id="center" class="panel"><div id="bigmsg"></div><div id="submsg"></div></div></div>
   <div id="toast" class="panel" role="status"></div>
   <div id="help" class="panel">Drive through <b>?</b> boxes for a weapon. <b>Space</b> fires.</div>
@@ -1624,21 +1665,36 @@ function recolorKart(v, color) {
 // not be loaded when a tag is first drawn (no DOM text uses that weight yet), so each tag redraws itself
 // once the face arrives.
 const TAG_FAMILY = '"Barlow Condensed", Inter, sans-serif';
+// The tag canvas is 256 x 80 (name on top, health bar below) and is drawn as a 6.4 x 2 unit sprite.
+const TAG_W = 256, TAG_H = 80;
+const hpColor = f => f > 0.6 ? '#3FD37A' : f > 0.3 ? '#FFC53D' : '#FF5A3C'; // --ok, --gold, --hot
 function nameSprite(text) {
-  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+  const cv = document.createElement('canvas'); cv.width = TAG_W; cv.height = TAG_H;
   const g = cv.getContext('2d');
+  let frac = 1; // health shown by the bar, 0..1 (sp.redraw sets it)
   const draw = () => {
-    g.clearRect(0, 0, 256, 64);
+    g.clearRect(0, 0, TAG_W, TAG_H);
     let px = 40; g.font = `700 ${px}px ${TAG_FAMILY}`;
-    const w = g.measureText(text).width; if (w > 240) { px = Math.max(24, Math.floor(px * 240 / w)); g.font = `700 ${px}px ${TAG_FAMILY}`; } // long names shrink to fit
+    let w = g.measureText(text).width; if (w > 240) { px = Math.max(24, Math.floor(px * 240 / w)); g.font = `700 ${px}px ${TAG_FAMILY}`; w = g.measureText(text).width; } // long names shrink to fit
     g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
-    g.lineWidth = 6; g.strokeStyle = 'rgba(13,18,28,.85)'; g.strokeText(text, 128, 33); g.fillStyle = '#F3F5F9'; g.fillText(text, 128, 33);
+    g.lineWidth = 6; g.strokeStyle = 'rgba(13,18,28,.85)'; g.strokeText(text, 128, 30); g.fillStyle = '#F3F5F9'; g.fillText(text, 128, 30);
+    // health bar under the name: about 60% of the name's width (72..150 px), 10 px tall, rounded, with a dark
+    // outline so it reads over bright tarmac. Green > amber > red like the HUD bar; always shown, full at 100%.
+    const bw = clamp(Math.round(w * 0.6), 84, 150), bh = 12, bx = 128 - bw / 2, by = 58;
+    g.lineWidth = 2; g.strokeStyle = 'rgba(13,18,28,.95)'; g.fillStyle = 'rgba(13,18,28,.8)';
+    g.beginPath(); g.roundRect(bx, by, bw, bh, 5); g.fill(); g.stroke();
+    const fw = Math.round((bw - 4) * frac);
+    if (fw > 0) {
+      g.fillStyle = hpColor(frac); g.beginPath(); g.roundRect(bx + 2, by + 2, fw, bh - 4, 3); g.fill();
+      g.fillStyle = 'rgba(255,255,255,.3)'; g.beginPath(); g.roundRect(bx + 3, by + 3, Math.max(0, fw - 2), 2, 1); g.fill(); // soft highlight
+    }
   };
   draw();
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  sp.redraw = f => { frac = f; draw(); tex.needsUpdate = true; };
   if (document.fonts) document.fonts.load(`700 40px ${TAG_FAMILY}`, text).then(f => { if (f.length && sp.parent) { draw(); tex.needsUpdate = true; } }).catch(() => {});
-  sp.scale.set(6.4, 1.6, 1); sp.position.y = 4.7; sp.renderOrder = 10; return sp;
+  sp.scale.set(6.4, 2, 1); sp.position.y = 4.6; sp.renderOrder = 10; return sp;
 }
 
 // --- shared power-up meshes (spike ring, ice block, shield bubble), sized for the new karts
@@ -1827,11 +1883,19 @@ function disposeKart(v) {
   if (v.model) v.model.bodyMat.dispose(); // geometry and the other materials are shared
   if (v.tag) { v.tag.material.map.dispose(); v.tag.material.dispose(); }
 }
-// Health bar above a kart: frac is 0..1 of WORLD.HP_MAX. Implemented with the HUD work; called every frame from update().
-function setHealth(v, frac) {}
+// Health bar above a kart (drawn into its name tag): frac is 0..1 of WORLD.HP_MAX. Called every frame from
+// update(); the tag only redraws when the value moved by 1% or more (or hits exactly empty / full).
+function setHealth(v, frac) {
+  if (!v.tag) return; // your own kart has no tag: your health is the HUD bar
+  frac = clamp(frac, 0, 1);
+  const last = v.hpFrac;
+  if (last === frac || (last !== undefined && frac > 0 && frac < 1 && Math.abs(frac - last) < 0.01)) return;
+  v.hpFrac = frac; v.tag.redraw(frac);
+}
 function setTag(v, text) {
   if (v.tag) { v.g.remove(v.tag); v.tag.material.map.dispose(); v.tag.material.dispose(); }
   v.tag = nameSprite(text); v.g.add(v.tag); v.tagText = text;
+  if (v.hpFrac !== undefined) v.tag.redraw(v.hpFrac); // a renamed kart keeps its health bar
 }
 function styleKart(v, s, t) {
   // s: {x,z,yaw,alive,spikes,star,frozen,protect,sp}
@@ -2635,31 +2699,96 @@ function standings() {
 /* ---------- HUD ---------- */
 // Icons are inline SVG (24x24, drawn in currentColor), so they look the same on every device.
 const svgIcon = body => `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+// Weapon badges: 64 x 64 cartoon badges drawn for this game. Each is filled shapes in 2-3 colours with a soft
+// highlight and a dark 2 px outline, on a round blue gradient with a lighter rim (grey for the empty slot).
+// The gradient is layered translucent shapes, not <linearGradient>: a badge appears twice (slot + Fire button) and
+// gradient ids are document-global, and Chrome does not paint a gradient whose definition sits in a display:none subtree.
+const INK = '#1B2233', WHITE = '#F3F5F9', ORANGE = '#FF7A3C', GOLD = '#FFC53D', GREEN = '#4FBF6A', STEEL = '#3D4452', ICE = '#6FD1FF';
+const badge = (body, dark = '#2457C8', mid = '#3379EC') => `<svg viewBox="0 0 64 64" aria-hidden="true" stroke="${INK}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">` +
+  `<circle cx="32" cy="32" r="30" fill="${dark}"/><circle cx="32" cy="29" r="27" fill="${mid}" stroke="none"/>` +
+  `<ellipse cx="32" cy="22" rx="24" ry="16" fill="rgba(255,255,255,.13)" stroke="none"/><ellipse cx="32" cy="17" rx="18" ry="9.5" fill="rgba(255,255,255,.13)" stroke="none"/>` +
+  `<circle cx="32" cy="32" r="27.5" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="2"/>${body}</svg>`;
+// polygon points of an n-pointed star centred on (cx, cy): outer radius R, inner radius r
+const starPts = (cx, cy, n, R, r, rot = -Math.PI / 2) => Array.from({ length: n * 2 }, (_, i) => { const a = rot + i * Math.PI / n, d = i % 2 ? r : R; return `${(cx + Math.cos(a) * d).toFixed(1)} ${(cy + Math.sin(a) * d).toFixed(1)}`; }).join(' ');
+const hi = (d, o = 0.45) => `<path d="${d}" fill="none" stroke="rgba(255,255,255,${o})" stroke-width="2"/>`; // soft highlight stroke
+// one white rocket with an orange nose and fins, pointing up, nose at y -22 and flame at y 15 (local coords)
+const ROCKET = `<path d="M-4 -8 Q0 -22 4 -8Z" fill="${ORANGE}"/><rect x="-4" y="-9" width="8" height="19" rx="2.5" fill="${WHITE}"/>` +
+  `<path d="M-4 3 L-8.5 11.5 L-4 9.5Z M4 3 L8.5 11.5 L4 9.5Z" fill="${ORANGE}"/><circle cx="0" cy="-2.5" r="2" fill="${ICE}" stroke-width="1.5"/>` +
+  `<path d="M-2.5 10 L0 15.5 L2.5 10Z" fill="${GOLD}" stroke-width="1.5"/>`;
+const SNOWBALL = (x, y, r) => `<circle cx="${x}" cy="${y}" r="${r}" fill="#E8F6FF"/><path d="M${x - r * 0.55} ${y - r * 0.35} A${r * 0.7} ${r * 0.7} 0 0 1 ${x + r * 0.15} ${y - r * 0.75}" fill="none" stroke="#fff" stroke-width="2"/>` +
+  `<path d="M${x - r * 0.6} ${y + r * 0.45} Q${x} ${y + r * 1.0} ${x + r * 0.6} ${y + r * 0.45}" fill="none" stroke="#B9DCF5" stroke-width="2"/>`;
 const WEAPON_ICONS = {
-  rockets: svgIcon('<g transform="rotate(45 12 12)"><path d="M12 2.5c2.8 2 4.3 5.2 4.3 9V16H7.7v-4.5c0-3.8 1.5-7 4.3-9z"/><circle cx="12" cy="9.3" r="1.6"/><path d="M7.7 12.5 5 15.2v3.3l2.7-1.4M16.3 12.5l2.7 2.7v3.3l-2.7-1.4M10.2 19.2 12 22l1.8-2.8"/></g>'),
-  bullets: svgIcon('<path d="M2.5 8.5h11M2.5 12h11M2.5 15.5h11"/><rect x="13.5" y="6" width="7" height="12" rx="2"/><path d="M17 18v3"/>'),
-  mines: svgIcon('<path d="M3 19h18"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/><path d="M12 12.5V9.8"/><circle cx="12" cy="7.4" r="1.5" fill="currentColor" stroke="none"/><path d="M8 5.8 6.8 4.6M16 5.8l1.2-1.2"/>'),
-  grenuke: svgIcon('<circle cx="10.5" cy="14" r="6.5"/><path d="M15.2 9.3l2.2-2.2"/><path d="M19.2 3.4v1.6M22 6.4h-1.6M21.2 4.2l-1.1 1.1"/><path d="M7.4 13.2a3.3 3.3 0 0 1 2.4-2.6"/>'),
-  snowballs: svgIcon('<path stroke-width="1.8" d="M12 2.5v19M3.77 7.25l16.46 9.5M3.77 16.75l16.46-9.5M9.4 3.5 12 5.7l2.6-2.2M9.4 20.5 12 18.3l2.6 2.2M18.06 5.5l-.6 3.35 3.2 1.15M20.66 14l-3.2 1.15.6 3.35M5.94 18.5l.6-3.35-3.2-1.15M3.34 10l3.2-1.15-.6-3.35"/>'),
-  spiky: svgIcon('<polygon stroke-width="1.8" points="12 2 14.53 5.9 19.07 4.93 18.1 9.47 22 12 18.1 14.53 19.07 19.07 14.53 18.1 12 22 9.47 18.1 4.93 19.07 5.9 14.53 2 12 5.9 9.47 4.93 4.93 9.47 5.9"/><circle cx="12" cy="12" r="2.8"/>'),
-  star: svgIcon('<polygon points="12 3.2 14.53 9.32 21.13 9.83 16.09 14.13 17.64 20.57 12 17.1 6.36 20.57 7.91 14.13 2.87 9.83 9.47 9.32"/>'),
-  nuke: svgIcon('<polygon stroke-width="1.8" points="12 1.8 13.8 5.86 17.51 3.42 16.84 7.81 21.28 7.76 18.33 11.09 22.1 13.45 17.82 14.66 19.71 18.68 15.46 17.38 14.87 21.79 12 18.4 9.13 21.79 8.54 17.38 4.29 18.68 6.18 14.66 1.9 13.45 5.67 11.09 2.72 7.76 7.16 7.81 6.49 3.42 10.2 5.86"/><circle cx="12" cy="12.2" r="2.6" fill="currentColor" stroke="none"/>'),
+  // three rockets fanning out from the bottom centre
+  rockets: badge(`<g transform="translate(32 48)"><g transform="rotate(-27) translate(0 -16) scale(.82)">${ROCKET}</g><g transform="rotate(27) translate(0 -16) scale(.82)">${ROCKET}</g><g transform="translate(0 -14)">${ROCKET}</g></g>`),
+  // a trio of golden bullets
+  bullets: badge([-11, 0, 11].map((x, i) => `<g transform="translate(${32 + x} ${i === 1 ? 30 : 34})"><path d="M-4.5 -4 Q0 -17 4.5 -4Z" fill="#E0863A"/><rect x="-4.5" y="-5" width="9" height="20" rx="2" fill="${GOLD}"/>` +
+    `<rect x="-4.5" y="9" width="9" height="3.5" fill="#D9962E" stroke="none"/>${hi('M-2 -2 v9', 0.55)}</g>`).join('')),
+  // a chunky green gun with a muzzle flame
+  machinegun: badge(`<path d="M50 32 l9 -6 l-3 6.5 l5 .5 l-11 6Z" fill="${GOLD}"/><path d="M50 33 l5 -3 l-2 4Z" fill="${ORANGE}" stroke="none"/>` +
+    `<path d="M17 29 L8 31 L8 38 L17 38Z" fill="${STEEL}"/><rect x="42" y="30.5" width="9" height="6" rx="1.5" fill="${STEEL}"/>` +
+    `<path d="M27 38 L24 49 L32 49 L34 38Z" fill="${STEEL}"/><path d="M35 38 L37 47 L43 47 L42 38Z" fill="${GREEN}"/>` +
+    `<rect x="16" y="27" width="27" height="11.5" rx="2.5" fill="${GREEN}"/><rect x="26" y="23" width="8" height="5" rx="1.5" fill="${GREEN}"/>${hi('M19 30 h20', 0.4)}`),
+  // three snowballs with motion lines
+  snowballs: badge(`<path d="M10 24 h8 M7 33 h10 M10 42 h8" fill="none" stroke="${WHITE}" stroke-width="2.5"/>${SNOWBALL(31, 40, 10.5)}${SNOWBALL(26, 24, 7.5)}${SNOWBALL(44, 27, 7)}`),
+  // a black cannon with grey balls arcing out of it
+  cannon: badge(`<circle cx="50" cy="19" r="3.2" fill="#9AA3B2"/><circle cx="43" cy="24" r="4.2" fill="#9AA3B2"/><path d="M52 12 l3 -3 M57 16 l3.5 -1.5" fill="none" stroke="${WHITE}" stroke-width="2"/>` +
+    `<g transform="rotate(-38 24 42)"><path d="M6 37 L36 35 L36 47 L6 46Z" fill="#2B2F3A"/><rect x="33" y="33" width="6" height="16" rx="2" fill="#2B2F3A"/>${hi('M10 39.5 h22', 0.3)}</g>` +
+    `<path d="M14 42 L34 42 L38 50 L10 50Z" fill="#8B5A2B"/><circle cx="22" cy="48" r="6.5" fill="#8B5A2B"/><circle cx="22" cy="48" r="2.2" fill="${GOLD}" stroke-width="1.5"/>`),
+  // an orange grenade bundle with a lit fuse
+  grenuke: badge(`<path d="M34 24 Q40 18 42 12" fill="none" stroke="${INK}" stroke-width="2.5"/><polygon points="${starPts(43, 11, 5, 5.5, 2.5)}" fill="${GOLD}" stroke-width="1.5"/>` +
+    `<circle cx="20" cy="38" r="9" fill="${ORANGE}"/><circle cx="44" cy="39" r="9" fill="${ORANGE}"/>` +
+    `<rect x="27" y="21" width="10" height="7" rx="2" fill="${STEEL}"/><circle cx="32" cy="38" r="12.5" fill="${ORANGE}"/>` +
+    `<path d="M22 34 h20 M32 26 v24 M26 46 h12" fill="none" stroke="rgba(27,34,51,.5)" stroke-width="1.5"/>${hi('M25 32 Q28 28 33 28', 0.5)}`),
+  // a green rocket over an orange splash, with a yellow radiation badge
+  nuke: badge(`<polygon points="${starPts(32, 42, 10, 19, 14, 0.2)}" fill="${ORANGE}"/><polygon points="${starPts(32, 42, 10, 12, 9, 0.5)}" fill="${GOLD}" stroke="none"/>` +
+    `<path d="M26 20 Q32 7 38 20Z" fill="#A7B3C6"/><path d="M26 36 L19 46 L26 44Z M38 36 L45 46 L38 44Z" fill="${ORANGE}"/>` +
+    `<rect x="26" y="19" width="12" height="27" rx="3" fill="${GREEN}"/><circle cx="32" cy="31" r="5.5" fill="${GOLD}"/>` +
+    `<path d="M32 31 v-4.2 M32 31 l3.6 2.1 M32 31 l-3.6 2.1" fill="none" stroke="${INK}" stroke-width="2.4"/>${hi('M28.5 22 v20', 0.4)}`),
+  // a dark mine with a red light
+  mines: badge(`<path d="M32 17 v-5 M44 22 l3.5 -3.5 M20 22 l-3.5 -3.5 M50 36 h5 M9 36 h5 M44 50 l3.5 3.5 M20 50 l-3.5 3.5" fill="none" stroke="${INK}" stroke-width="4.5"/>` +
+    `<circle cx="32" cy="36" r="15" fill="${STEEL}"/><circle cx="32" cy="29" r="7.5" fill="rgba(255,90,60,.35)" stroke="none"/><circle cx="32" cy="29" r="4" fill="#FF5A3C"/>${hi('M22 42 A11 11 0 0 1 20.5 34', 0.3)}`),
+  // a ring of black spiked balls around a hub
+  spiky: badge(`<circle cx="32" cy="32" r="7" fill="#A7B3C6"/><circle cx="32" cy="32" r="2.5" fill="${STEEL}"/>` +
+    [0, 1, 2, 3, 4, 5].map(i => { const a = i / 6 * Math.PI * 2 - Math.PI / 2, x = 32 + Math.cos(a) * 17.5, y = 32 + Math.sin(a) * 17.5; return `<polygon points="${starPts(x, y, 8, 8.5, 5.5, a)}" fill="${STEEL}"/><circle cx="${(x - 1.5).toFixed(1)}" cy="${(y - 1.5).toFixed(1)}" r="1.4" fill="rgba(255,255,255,.5)" stroke="none"/>`; }).join('')),
+  // a big yellow star with little stars
+  star: badge(`<polygon points="${starPts(13, 17, 5, 5, 2.3)}" fill="${WHITE}" stroke-width="1.5"/><polygon points="${starPts(52, 21, 5, 4, 1.8)}" fill="${WHITE}" stroke-width="1.5"/>` +
+    `<polygon points="${starPts(33, 35, 5, 21, 9.5)}" fill="${GOLD}"/><polygon points="${starPts(31, 33, 5, 9, 4.2)}" fill="#FFE28A" stroke="none"/>`),
+  // a ? box with a small blue skull sticker
+  fakebox: badge(`<rect x="17" y="17" width="30" height="30" rx="5" fill="#8F6BFF"/><path d="M17 27 v-5 a5 5 0 0 1 5 -5 h20 a5 5 0 0 1 5 5 v5Z" fill="#B59CFF" stroke="none"/>` +
+    `<rect x="17" y="17" width="30" height="30" rx="5" fill="none"/><path d="M26.5 28.5 a5.5 5.5 0 1 1 7.5 5 c-1.7 .9 -2 1.8 -2 3.5" fill="none" stroke="${WHITE}" stroke-width="3.5"/><circle cx="32" cy="41" r="2" fill="${WHITE}" stroke="none"/>` +
+    `<circle cx="45" cy="45" r="8" fill="${ICE}"/><path d="M45 40 a4 4 0 0 1 4 4 v1.5 h-1.5 v2.5 h-5 v-2.5 h-1.5 v-1.5 a4 4 0 0 1 4 -4Z" fill="${WHITE}" stroke-width="1.2"/>` +
+    `<circle cx="43.4" cy="44.3" r="1" fill="${INK}" stroke="none"/><circle cx="46.6" cy="44.3" r="1" fill="${INK}" stroke="none"/>`),
 };
-// temporary aliases until the new badges exist
-WEAPON_ICONS.machinegun = WEAPON_ICONS.bullets; WEAPON_ICONS.cannon = WEAPON_ICONS.grenuke; WEAPON_ICONS.fakebox = WEAPON_ICONS.mines;
 const UI_ICONS = {
-  empty: svgIcon('<rect x="3.5" y="3.5" width="17" height="17" rx="3" stroke-width="1.6" stroke-dasharray="3.2 2.6"/><path d="M9.7 9.7a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.4v.5"/><circle cx="12" cy="16.6" r=".5"/>'),
+  // the empty weapon slot: a grey badge with a dashed box and a faint ?
+  empty: badge(`<rect x="19" y="19" width="26" height="26" rx="5" fill="none" stroke="#A4ADC0" stroke-width="2" stroke-dasharray="4 3.2"/>` +
+    `<path d="M27.5 28.5 a4.5 4.5 0 1 1 6.2 4.2 c-1.4 .7 -1.7 1.5 -1.7 2.8" fill="none" stroke="#A4ADC0" stroke-width="2.5"/><circle cx="32" cy="39.5" r="1.5" fill="#A4ADC0" stroke="none"/>`, '#232A3A', '#3A4354'),
   settings: svgIcon('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
   close: svgIcon('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
   fire: svgIcon('<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="1.8"/><path d="M12 1.8v4M12 18.2v4M1.8 12h4M18.2 12h4"/>'),
+  heart: svgIcon('<path fill="currentColor" stroke="none" d="M12 20.6C7 16.4 3.4 13.3 3.4 9.2a4.4 4.4 0 0 1 8.6-1.3 4.4 4.4 0 0 1 8.6 1.3c0 4.1-3.6 7.2-8.6 11.4z"/>'),
+  hit: svgIcon('<path stroke-width="2.6" d="M12 3v5M12 16v5M3 12h5M16 12h5"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/>'),
 };
 const hudEl = {
   hud: $('#hud'), timer: $('#timer'), riA: $('#roominfo .ri-a'), riB: $('#roominfo .ri-b'), board: $('#board'), feed: $('#feed'),
-  slot: $('#slot'), glyph: $('#slotGlyph'), count: $('#slotCount'), slotName: $('#slotName'), slotSub: $('#slotSub'),
+  slot: $('#slot'), glyph: $('#slotGlyph'), count: $('#slotCount'), slotName: $('#slotName'), slotSub: $('#slotSub'), ammo: $('#slotAmmo'), ammoFill: $('#slotAmmoFill'), hitMark: $('#hitMark'),
+  hp: $('#hp'), hpIcon: $('#hpIcon'), hpFill: $('#hpFill'), hpNum: $('#hpNum'), vignette: $('#vignette'),
   center: $('#center'), big: $('#bigmsg'), sub: $('#submsg'), toast: $('#toast'), fireIcon: $('#fireIcon'), fire: $('#fireBtn'),
   results: $('#results'), winLine: $('#winLine'), winSub: $('#winSub'), standings: $('#standings'), next: $('#next'), nextBar: $('#nextBar'),
 };
-hudEl.glyph.innerHTML = UI_ICONS.empty; hudEl.fireIcon.innerHTML = UI_ICONS.fire;
+hudEl.glyph.innerHTML = UI_ICONS.empty; hudEl.fireIcon.innerHTML = UI_ICONS.fire; hudEl.hpIcon.innerHTML = UI_ICONS.heart; hudEl.hitMark.innerHTML = UI_ICONS.hit;
+// Damage feedback. triggerHit(): red edge vignette + white flash of your health bar (update() calls it when your hp
+// drops). onHitMarker(): the small cross-hair on the weapon badge blinks; for the weapon engine to call when a shot of yours lands.
+let hitTimer = 0, hitMarkTimer = 0;
+function triggerHit() {
+  const V = hudEl.vignette, B = hudEl.hp;
+  V.classList.add('on'); B.classList.add('hit');
+  clearTimeout(hitTimer); hitTimer = setTimeout(() => { V.classList.remove('on'); B.classList.remove('hit'); }, 200);
+}
+function onHitMarker() {
+  const m = hudEl.hitMark; m.classList.remove('on'); void m.offsetWidth; m.classList.add('on');
+  clearTimeout(hitMarkTimer); hitMarkTimer = setTimeout(() => m.classList.remove('on'), 180);
+}
 const setText = (el, s) => { if (el.textContent !== s) el.textContent = s; };
 const feed = [];
 function pushFeed(a, b, mine, verb) {
@@ -2695,7 +2824,7 @@ function renderList(el, rows, cls) {
     return li;
   }));
 }
-let hudAt = 0, lastSlot = '', centerCls = '', lastSnd = null;
+let hudAt = 0, lastSlot = '', lastIcon = '', centerCls = '', lastSnd = null, lastHpN = -1;
 function updateHud(now, playing, phaseT) {
   if (now - hudAt < 150 && now >= hudAt) return; hudAt = now; // (also recovers if the clock jumps back)
   const H = hudEl, st = standings();
@@ -2720,14 +2849,23 @@ function updateHud(now, playing, phaseT) {
     lastSlot = slotKey;
     if (me.weapon) {
       const w = WEAPONS[me.weapon], icon = WEAPON_ICONS[me.weapon] || UI_ICONS.fire;
-      H.slot.classList.remove('empty'); H.glyph.innerHTML = icon; H.count.textContent = me.charges > 1 ? me.charges : '';
+      H.slot.classList.remove('empty'); H.count.textContent = String(me.charges);
+      if (lastIcon !== icon) { lastIcon = icon; H.glyph.innerHTML = icon; H.fireIcon.innerHTML = icon; } // (the badge only changes with the weapon, not per shot)
       H.slotName.textContent = w.label; H.slotSub.textContent = me.charges > 1 ? `${me.charges} left, ${w.sub.toLowerCase()}` : w.sub;
-      H.fireIcon.innerHTML = icon; H.fire.classList.remove('dim');
+      H.ammo.hidden = w.ch < 2; H.ammoFill.style.transform = `scaleX(${clamp(me.charges / w.ch, 0, 1).toFixed(3)})`; // multi-shot weapons drain a thin ammo bar
+      H.fire.classList.remove('dim');
     } else {
-      H.slot.classList.add('empty'); H.glyph.innerHTML = UI_ICONS.empty; H.count.textContent = '';
+      lastIcon = ''; H.slot.classList.add('empty'); H.glyph.innerHTML = UI_ICONS.empty; H.count.textContent = ''; H.ammo.hidden = true;
       H.slotName.textContent = 'Empty'; H.slotSub.textContent = 'Drive through a ? box';
       H.fireIcon.innerHTML = UI_ICONS.fire; H.fire.classList.add('dim');
     }
+  }
+  // your health bar: number, fill, colour band (> 60% ok, > 30% gold, else hot + pulse)
+  const hpN = Math.ceil(clamp(me.hp, 0, WORLD.HP_MAX));
+  if (hpN !== lastHpN) {
+    lastHpN = hpN; const f = hpN / WORLD.HP_MAX;
+    setText(H.hpNum, String(hpN)); H.hpFill.style.transform = `scaleX(${f.toFixed(3)})`; H.hp.setAttribute('aria-valuenow', String(hpN));
+    H.hp.classList.toggle('mid', f <= 0.6 && f > 0.3); H.hp.classList.toggle('low', f <= 0.3);
   }
   // centre message
   let big = '', sub = '', kind = '';
@@ -2753,7 +2891,7 @@ function updateHud(now, playing, phaseT) {
   } else if (!H.results.hidden) { H.results.hidden = true; H.hud.classList.remove('over'); }
 }
 // debug handle for UI tests (only with ?debug in the URL)
-if (/[?&]debug(?:[=&]|$)/.test(location.search)) window.SKUI = { pushFeed, toast, flashSlot, WEAPON_ICONS, UI_ICONS };
+if (/[?&]debug(?:[=&]|$)/.test(location.search)) window.SKUI = { pushFeed, toast, flashSlot, triggerHit, onHitMarker, setHealth, WEAPON_ICONS, UI_ICONS };
 
 /* ---------- input ---------- */
 const keys = new Set(); let firePressed = false, fireHeld = false;
@@ -2860,7 +2998,7 @@ $('#play').addEventListener('click', async () => {
 })();
 
 /* ---------- main loop ---------- */
-let last = performance.now(), sendAt = 0, cleanAt = 0, t0 = performance.now();
+let last = performance.now(), sendAt = 0, cleanAt = 0, t0 = performance.now(), hudLastHp = Infinity;
 const camPos = new THREE.Vector3(0, 80, 140), camLook = new THREE.Vector3();
 // One fixed 60 Hz step of kart physics: player input, bots, respawns, kart-vs-kart pushes.
 function physicsStep(dt) {
@@ -2915,13 +3053,17 @@ function update(dt) {
   for (const k of localKarts()) {
     const P = renderPose(k, A), body = P.yaw + P.lean;
     styleKart(k.view, { x: P.x, y: P.y, z: P.z, yaw: body, alive: k.alive, spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil, sp: k.sp }, tSec);
+    setHealth(k.view, k.hp / WORLD.HP_MAX);
     driftFx(k.view, k.alive && k.drift !== 0, P.x, P.z, body, dt);
   }
   for (const R of remotes.values()) {
     const fx = String(R.p.fx || ''), body = R.dyaw + (R.lean || 0);
     styleKart(R.view, { x: R.dx, y: R.dy, z: R.dz, yaw: body, alive: !!R.p.a, spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u'), sp: Math.hypot(+R.p.vx || 0, +R.p.vz || 0) }, tSec);
+    setHealth(R.view, (R.p.hp == null ? WORLD.HP_MAX : +R.p.hp || 0) / WORLD.HP_MAX);
     driftFx(R.view, !!R.p.a && !!R.drift, R.dx, R.dz, body, dt);
   }
+  // damage feedback: your health dropped since the last frame (a respawn only raises it, so no reset is needed)
+  if (started) { if (me.hp < hudLastHp) triggerHit(); hudLastHp = me.hp; }
   updateFx(dt);
   // camera
   if (started) {
