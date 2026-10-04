@@ -30,4 +30,4 @@ The host sets the `PORT` environment variable; the server picks it up automatica
 
 ## Tuning
 
-The numbers you'd most likely want to change are at the top of the script in `index.html`: `ROUND_MS` (round length), `RESPAWN_MS`, `BOX_RESPAWN`, the `WEAPONS` table (charges and how often each drops), and `DEF` (projectile speed, blast radius). Kart handling lives in `drive()`.
+The numbers you'd most likely want to change are at the top of the script in `index.html`: `ROUND_MS` (round length), `RESPAWN_MS`, `BOX_RESPAWN`, the `WEAPONS` table (charges and how often each drops), and `DEF` (projectile speed, blast radius). Kart handling numbers (speeds, grip, reverse ratio, drifting and the drift boost toggle) are all in the `DRIVE` object at the top of the script; the code that uses them is `drive()`. Kart driving runs at a fixed 60 Hz; projectiles, boxes and the HUD still update once per frame. `npm test` checks the driving model.
