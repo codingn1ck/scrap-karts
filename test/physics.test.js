@@ -15,7 +15,7 @@ function slice(from, to) {
 }
 const code = slice("'use strict';", '/* ---------- three.js scene ---------- */')
   + slice('/* ---------- physics ---------- */', '/* ---------- weapons & projectiles ---------- */')
-  + ';({ DRIVE, OBST, drive, driveState, makeFixedLoop, savePrev, renderPose })';
+  + ';({ DRIVE, WORLD, OBST, TERRAIN, KART_R, drive, driveState, resetDrive, makeFixedLoop, savePrev, renderPose, groundY, solidAt })';
 
 // Fresh copy of the game code for each test, so config tweaks don't leak.
 function load() { return vm.runInNewContext(code, { document: {}, Math, Object, Array, String, Number }); }
@@ -228,4 +228,135 @@ test('drift: ends when speed drops below 45% of top', () => {
   };
   assert.strictEqual(survives(0.47), true, 'drift holds at 47% (45.7% after drag)');
   assert.strictEqual(survives(0.44), false, 'drift ends at 44%');
+});
+
+/* ---------- terrain: y axis ---------- */
+// Lane x = -25 heading +z is clear of every obstacle; terrain for these tests is pushed into TERRAIN per test.
+const PLATEAU = { x: -25, z: -20, w: 20, d: 20, y: 3 };                           // z -30..-10
+const RAMP_Z = { x: -25, z: -35, w: 6, d: 10, y0: 0, y1: 3, dir: 'z' };            // z -40..-30, rises toward +z onto the plateau
+function terrainRig(...entries) { const G = load(); G.TERRAIN.push(...entries); return G; }
+// Drive n fixed steps with savePrev before each (as the game does), recording y along the way.
+function steps(G, k, n, thr, steer = 0) { const ys = []; for (let i = 0; i < n; i++) { G.savePrev(k); G.drive(k, thr, steer, G.DRIVE.STEP, 0); ys.push(k.y); } return ys; }
+
+test('terrain: groundY picks plateau, ramp low/mid/high, pit, and the highest of overlapping entries', () => {
+  const G = terrainRig(PLATEAU, RAMP_Z, { x: 30, z: 30, w: 10, d: 10, y: -2 }, { x: 30, z: 30, w: 4, d: 4, y: 1 },
+    { x: 0, z: 40, w: 10, d: 4, y0: 0, y1: 2, dir: '-x' });
+  assert.strictEqual(G.groundY(0, 0), 0, 'flat ground');
+  assert.strictEqual(G.groundY(-25, -20), 3, 'plateau top');
+  assert.strictEqual(G.groundY(-25, -9.9), 0, 'just off the plateau');
+  assert.ok(Math.abs(G.groundY(-25, -40)) < 1e-9, 'ramp low end');
+  assert.ok(Math.abs(G.groundY(-25, -35) - 1.5) < 1e-9, 'ramp middle');
+  assert.ok(Math.abs(G.groundY(-25, -30) - 3) < 1e-9, 'ramp high end');
+  assert.ok(Math.abs(G.groundY(-27.9, -32.5) - 2.25) < 1e-9, 'ramp height is constant across its width');
+  assert.strictEqual(G.groundY(30, 34), -2, 'pit');
+  assert.strictEqual(G.groundY(30, 30), 1, 'overlap: the highest entry wins');
+  assert.ok(Math.abs(G.groundY(5, 40)) < 1e-9 && Math.abs(G.groundY(-5, 40) - 2) < 1e-9 && Math.abs(G.groundY(0, 40) - 1) < 1e-9, '-x ramp rises toward -x');
+});
+
+test('terrain: a ramp raises the kart to the plateau top at full speed, in both directions and along x', () => {
+  // up a +z ramp onto the plateau
+  const G = terrainRig(PLATEAU, RAMP_Z), k = kart(G, -25, -55, 0);
+  const ys = steps(G, k, 120, 1);
+  assert.ok(k.z > -30 && k.z < -10, `on the plateau: z ${k.z}`);
+  assert.strictEqual(k.y, 3, `top height ${k.y}`);
+  assert.ok(ys.every(y => y >= -1e-9 && y <= 3 + 1e-9), 'y stays between ground and the top');
+  const climb = ys.filter((y, i) => i && y > ys[i - 1]).length; assert.ok(climb > 8, `rose over several steps, not a snap (${climb})`);
+  assert.ok(ys.every((y, i) => !i || y - ys[i - 1] < G.WORLD.STEP_UP), 'no single step bigger than STEP_UP');
+  // back down the same ramp: stays on the surface, ends on flat ground
+  const down = steps(G, Object.assign(k, { yaw: Math.PI, vx: 0, vz: 0 }), 150, 1);
+  assert.ok(k.z < -42 && Math.abs(k.y) < 1e-9, `back on the flat: z ${k.z} y ${k.y}`);
+  assert.ok(down.every((y, i) => !i || down[i - 1] - y < G.WORLD.STEP_UP), 'descended gradually');
+  // a -z ramp onto the same plateau, driven heading -z from the far side
+  const G2 = terrainRig(PLATEAU, { x: -25, z: -5, w: 6, d: 10, y0: 0, y1: 3, dir: '-z' }), k2 = kart(G2, -25, 20, Math.PI);
+  steps(G2, k2, 120, 1); assert.strictEqual(k2.y, 3, `-z ramp: y ${k2.y} z ${k2.z}`);
+  // a ramp along x (arena cleared of obstacles so the lane is free)
+  const G3 = terrainRig({ x: 0, z: 0, w: 20, d: 20, y: 3 }, { x: -15, z: 0, w: 10, d: 6, y0: 0, y1: 3, dir: 'x' }); G3.OBST.length = 0;
+  const k3 = kart(G3, -45, 0, Math.PI / 2); steps(G3, k3, 120, 1);
+  assert.strictEqual(k3.y, 3, `x ramp: y ${k3.y} x ${k3.x}`);
+  const G4 = terrainRig({ x: 0, z: 0, w: 20, d: 20, y: 3 }, { x: 15, z: 0, w: 10, d: 6, y0: 0, y1: 3, dir: '-x' }); G4.OBST.length = 0;
+  const k4 = kart(G4, 45, 0, -Math.PI / 2); steps(G4, k4, 120, 1);
+  assert.strictEqual(k4.y, 3, `-x ramp: y ${k4.y} x ${k4.x}`);
+});
+
+test('terrain: a ramp down into a pit and back out is drivable', () => {
+  const PIT = { x: -25, z: -20, w: 20, d: 20, y: -2 }, R = { x: -25, z: -35, w: 6, d: 10, y0: -2, y1: 0, dir: '-z' };
+  const G = terrainRig(PIT, R), k = kart(G, -25, -55, 0);
+  const ys = steps(G, k, 120, 1);
+  assert.ok(k.z > -30 && k.z < -10 && k.y === -2, `in the pit: z ${k.z} y ${k.y}`);
+  assert.ok(ys.every((y, i) => !i || ys[i - 1] - y < G.WORLD.STEP_UP), 'rolled down the ramp, no drop');
+  steps(G, Object.assign(k, { yaw: Math.PI, vx: 0, vz: 0 }), 150, 1);
+  assert.ok(k.z < -42 && Math.abs(k.y) < 1e-9, `back out: z ${k.z} y ${k.y}`);
+  // the pit's other sides are walls from inside: driving +z from inside the pit stops at the far side
+  const k2 = kart(G, -25, -15, 0); k2.y = -2; steps(G, k2, 120, 1);
+  assert.ok(k2.z <= -10 + 1e-9 && k2.y === -2, `pit wall holds: z ${k2.z} y ${k2.y}`);
+});
+
+test('terrain: a 3-unit plateau side blocks a kart (position reverts) while the ramp beside it is drivable', () => {
+  const G = terrainRig(PLATEAU, RAMP_Z);
+  // head-on into the plateau side next to the ramp
+  const k = kart(G, -18, -55, 0); steps(G, k, 120, 1);
+  assert.ok(k.z <= -30 + 1e-9, `stopped at the side: z ${k.z}`);
+  assert.ok(k.z > -32, `pressed against the side, not bounced away: z ${k.z}`);
+  assert.strictEqual(k.y, 0, 'did not climb'); assert.ok(Math.abs(k.x + 18) < 1e-9, 'x unchanged');
+  // same start on the ramp lane makes it up
+  const r = kart(G, -25, -55, 0); steps(G, r, 120, 1); assert.strictEqual(r.y, 3);
+  // into the side along x: x stays outside, z slides freely (per-axis revert)
+  G.OBST.length = 0;
+  const s = kart(G, -55, -20, Math.PI / 2 + 0.3); steps(G, s, 120, 1);
+  assert.ok(s.x <= -35 + 1e-9 && s.x > -37, `x held outside: ${s.x}`); assert.strictEqual(s.y, 0);
+  assert.ok(s.z < -20, `slid along the wall: z ${s.z}`);
+  // diagonal into a corner: both axes revert
+  const c = kart(G, -40, -45, Math.atan2(5, 15)); steps(G, c, 120, 1);
+  assert.ok(G.groundY(c.x, c.z) === 0 && c.y === 0, `corner: still on the flat at ${c.x},${c.z}`);
+  // the velocity on the blocked axis is damped like an obstacle hit
+  const v = kart(G, -18, -30.3, 0); v.vz = 20; G.savePrev(v); G.drive(v, 1, 0, G.DRIVE.STEP, 0);
+  assert.ok(v.vz < 0 && v.vz > -8, `bounced back gently: vz ${v.vz}`); assert.ok(Math.abs(v.z + 30.3) < 1e-9, 'position reverted to before the step');
+});
+
+test('terrain: driving off a plateau falls under gravity and lands at 0, never below', () => {
+  const G = terrainRig(PLATEAU), k = kart(G, -25, -14, 0); k.y = 3; k.py = 3;
+  const ys = steps(G, k, 120, 1);
+  const first = ys.findIndex(y => y < 3);
+  assert.ok(first > 0, 'left the edge');
+  assert.ok(ys[first] > 2.9, `first airborne step is a small drop, not a snap: ${ys[first]}`);
+  const air = ys.filter(y => y > 0 && y < 3).length;
+  assert.ok(air >= 15, `in the air for several steps (${air})`);
+  for (let i = first + 1; i < first + air; i++) assert.ok(ys[i] - ys[i - 1] < ys[i - 1] - ys[i - 2] + 1e-9 || ys[i] === 0, 'accelerating downward');
+  assert.ok(ys.every(y => y >= 0), 'never below ground');
+  assert.strictEqual(k.y, 0); assert.strictEqual(k.vy, 0);
+  // the fall follows GRAVITY: y after n airborne steps = 3 - G/2 * (n dt)^2 (summed per step)
+  let y = 3, vy = 0; for (let i = 0; i < 10; i++) { vy -= G.WORLD.GRAVITY * G.DRIVE.STEP; y += vy * G.DRIVE.STEP; }
+  assert.ok(Math.abs(ys[first + 9] - y) < 1e-9, `gravity integration: ${ys[first + 9]} vs ${y}`);
+  // a dead kart is left alone
+  const d = kart(G, -25, -14, 0); d.y = 3; d.alive = false; steps(G, d, 10, 1); assert.strictEqual(d.y, 3);
+});
+
+test('terrain: 2 s full throttle from a plateau covers identical distance and final y at 30, 60, 144 fps', () => {
+  const go = fps => {
+    const G = terrainRig(PLATEAU), k = kart(G, -25, -28, 0); k.y = 3; k.py = 3;
+    const { steps: n } = run(G, k, fps, 2, FULL);
+    assert.strictEqual(n, 120);
+    return { d: Math.hypot(k.x + 25, k.z + 28), y: k.y, z: k.z };
+  };
+  const a = go(30), b = go(60), c = go(144);
+  console.log(`  from plateau: 30fps=${a.d.toFixed(6)} y=${a.y}  60fps=${b.d.toFixed(6)} y=${b.y}  144fps=${c.d.toFixed(6)} y=${c.y}`);
+  assert.ok(a.z > -10, 'drove off the plateau edge');
+  assert.strictEqual(a.y, 0, 'landed'); assert.strictEqual(b.y, a.y); assert.strictEqual(c.y, a.y);
+  assert.ok(Math.abs(a.d - b.d) < 1e-9 && Math.abs(a.d - c.d) < 1e-9, `${a.d} ${b.d} ${c.d}`);
+  // interpolation covers y too
+  const G = load(); const p = G.renderPose({ x: 0, z: 0, y: 2, px: 0, pz: 0, py: 1, yaw: 0, pyaw: 0, lean: 0, plean: 0 }, 0.5);
+  assert.strictEqual(p.y, 1.5);
+  // resetDrive keeps the kart's height (respawn sets y = groundY first)
+  const k = kart(G, 0, 0, 0); k.y = 3; G.resetDrive(k); assert.strictEqual(k.y, 3); assert.strictEqual(k.py, 3); assert.strictEqual(k.vy, 0);
+});
+
+test('terrain: solidAt treats ground above a given height as solid; without y it ignores terrain', () => {
+  const G = terrainRig(PLATEAU, RAMP_Z);
+  assert.strictEqual(G.solidAt(-25, -20, 0.3), false, 'old signature: terrain ignored');
+  assert.strictEqual(G.solidAt(-25, -20, 0.3, 1.1), true, 'a shot at 1.1 hits the 3-high plateau');
+  assert.strictEqual(G.solidAt(-25, -20, 0.3, 4.1), false, 'a shot fired from the plateau flies over it');
+  assert.strictEqual(G.solidAt(-25, -39, 0.3, 1.1), false, 'low end of the ramp is below the shot');
+  assert.strictEqual(G.solidAt(-25, -31, 0.3, 1.1), true, 'high end of the ramp is above it');
+  assert.strictEqual(G.solidAt(0, 0, 0.3, 1.1), false, 'flat ground');
+  assert.strictEqual(G.solidAt(14, 14, 0.3, 1.1), true, 'obstacles still count');
 });
