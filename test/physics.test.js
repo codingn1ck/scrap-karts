@@ -105,7 +105,7 @@ test('reverse: same acceleration as forward, top speed = REVERSE_RATIO * top', (
 
 // Drift tests run in an open arena (no obstacles) so the kart can circle freely.
 function driftRig(cfg = {}) {
-  const G = load(); G.OBST.length = 0; Object.assign(G.DRIVE, cfg);
+  const G = load(); G.OBST.length = 0; G.TERRAIN.length = 0; Object.assign(G.DRIVE, cfg);
   const k = kart(G, 0, -40, 0), S = G.DRIVE.STEP;
   const steps = (n, thr, steer) => { for (let i = 0; i < n; i++) G.drive(k, thr, steer, S, 0); };
   steps(120, 1, 0); // 2 s straight: up to top speed
@@ -234,7 +234,7 @@ test('drift: ends when speed drops below 45% of top', () => {
 // Lane x = -25 heading +z is clear of every obstacle; terrain for these tests is pushed into TERRAIN per test.
 const PLATEAU = { x: -25, z: -20, w: 20, d: 20, y: 3 };                           // z -30..-10
 const RAMP_Z = { x: -25, z: -35, w: 6, d: 10, y0: 0, y1: 3, dir: 'z' };            // z -40..-30, rises toward +z onto the plateau
-function terrainRig(...entries) { const G = load(); G.TERRAIN.push(...entries); return G; }
+function terrainRig(...entries) { const G = load(); G.TERRAIN.length = 0; G.TERRAIN.push(...entries); return G; } // open arena: the real map is replaced by the test terrain
 // Drive n fixed steps with savePrev before each (as the game does), recording y along the way.
 function steps(G, k, n, thr, steer = 0) { const ys = []; for (let i = 0; i < n; i++) { G.savePrev(k); G.drive(k, thr, steer, G.DRIVE.STEP, 0); ys.push(k.y); } return ys; }
 
@@ -357,6 +357,6 @@ test('terrain: solidAt treats ground above a given height as solid; without y it
   assert.strictEqual(G.solidAt(-25, -20, 0.3, 4.1), false, 'a shot fired from the plateau flies over it');
   assert.strictEqual(G.solidAt(-25, -39, 0.3, 1.1), false, 'low end of the ramp is below the shot');
   assert.strictEqual(G.solidAt(-25, -31, 0.3, 1.1), true, 'high end of the ramp is above it');
-  assert.strictEqual(G.solidAt(0, 0, 0.3, 1.1), false, 'flat ground');
-  assert.strictEqual(G.solidAt(14, 14, 0.3, 1.1), true, 'obstacles still count');
+  assert.strictEqual(G.solidAt(-50, 0, 0.3, 1.1), false, 'flat ground');
+  assert.strictEqual(G.solidAt(40, 9, 0.3, 1.1), true, 'obstacles still count (crate at 40,9)');
 });
