@@ -4,118 +4,306 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Scrap Karts</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%2210%22 fill=%22%23FF5A3C%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%227%22 fill=%22none%22 stroke=%22white%22 stroke-width=%223.5%22/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@600;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;1,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* =========================================================================
+   UI: menu, HUD, results.
+   Design rules: two fonts (Barlow Condensed for headings and numbers, Inter
+   for text); three accents (--hot, --gold, --violet) plus neutrals; one
+   corner radius (--r; small dots and the round touch controls are circles);
+   transitions 150-250 ms (--t); dark panels so text reads over the 3D scene.
+   ========================================================================= */
 :root{
-  --navy:#23304A; --navy-90:rgba(35,48,74,.9); --cream:#FFF4DC; --tomato:#E8553E;
-  --mustard:#F2B134; --violet:#7C4DFF; --sky:#A9D8EA; --card:#FFFFFF; --ink:#23304A; --muted:#5C6780;
-  --display:"Lilita One","Arial Rounded MT Bold","Trebuchet MS",system-ui,sans-serif;
-  --body:"Nunito","Segoe UI",system-ui,-apple-system,sans-serif;
-  box-sizing:border-box;
-  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  --hot:#FF5A3C;      /* action: Play, Fire, low time, your kills */
+  --gold:#FFC53D;     /* you: your row, your name, Go! */
+  --violet:#8F6BFF;   /* items: weapon slot (matches the ? boxes) */
+  --bg:#0D121C; --panel:rgba(13,18,28,.8); --panel-solid:rgba(13,18,28,.9); --glass:rgba(13,18,28,.7);
+  --line:rgba(255,255,255,.1); --fill:rgba(255,255,255,.07);
+  --text:#F3F5F9; --muted:#A4ADC0;
+  --r:10px; --t:200ms; --ease:cubic-bezier(.2,.7,.2,1);
+  --display:"Barlow Condensed","Arial Narrow","Roboto Condensed",system-ui,sans-serif;
+  --body:"Inter","Segoe UI",system-ui,-apple-system,sans-serif;
+  --sat:env(safe-area-inset-top,0px); --sar:env(safe-area-inset-right,0px);
+  --sab:env(safe-area-inset-bottom,0px); --sal:env(safe-area-inset-left,0px);
+  --pad:12px;
 }
-@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --card:#2B3958; --ink:#FFF4DC; --muted:#B9C2D6; } }
-:root[data-theme="dark"]{ --card:#2B3958; --ink:#FFF4DC; --muted:#B9C2D6; }
-*,*::before,*::after{box-sizing:inherit}
-html{scroll-padding-top:env(safe-area-inset-top,0px)}
-html,body{height:100%;margin:0;overflow:hidden;background:var(--sky);font-family:var(--body);color:var(--ink);
-  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);font:500 14px/1.4 var(--body);color:var(--text);
+  -webkit-font-smoothing:antialiased;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
 #c{position:fixed;inset:0;width:100%;height:100%;display:block;outline:none;touch-action:none}
+button{font:inherit;color:inherit}
+svg{display:block}
+
+/* shared panel: solid dark (backdrop blur on every HUD block costs ~25% fps on integrated GPUs).
+   Only the big menu and results cards are frosted glass, and only on High quality. */
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.2)}
+.card.panel{background:var(--glass);-webkit-backdrop-filter:blur(12px) saturate(1.25);backdrop-filter:blur(12px) saturate(1.25)}
+html[data-q="low"] .card.panel{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--panel-solid)}
+.lbl{display:block;font-size:11.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+.seg{display:flex;gap:3px;padding:3px;background:var(--fill);border:1px solid var(--line);border-radius:var(--r)}
+.seg button{flex:1;min-width:0;padding:8px 10px;font-size:13.5px;font-weight:600;line-height:1;color:var(--muted);background:transparent;border:0;
+  border-radius:var(--r);cursor:pointer;transition:background-color var(--t) var(--ease),color var(--t) var(--ease)}
+@media (hover:hover){ .seg button:hover{color:var(--text)} }
+.seg button[aria-pressed="true"]{background:var(--text);color:var(--bg)}
+.seg button:focus-visible,.iconbtn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 
 /* ---------- menu ---------- */
-#menu{position:fixed;inset:0;display:flex;align-items:flex-start;padding:24px clamp(16px,6vw,72px);
-  padding-top:calc(24px + env(safe-area-inset-top,0px));padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));
-  background:linear-gradient(90deg,rgba(35,48,74,.55),rgba(35,48,74,0) 62%);overflow:auto}
+#menu{position:fixed;inset:0;z-index:20;display:flex;overflow-y:auto;overscroll-behavior:contain;
+  padding:calc(28px + var(--sat)) calc(clamp(16px,5vw,64px) + var(--sar)) calc(28px + var(--sab)) calc(clamp(16px,5vw,64px) + var(--sal));
+  background:linear-gradient(90deg,rgba(9,13,21,.86) 0,rgba(9,13,21,.6) 30%,rgba(9,13,21,0) 60%)}
 #menu[hidden]{display:none}
-.menu-inner{width:min(420px,100%);margin:auto 0}
-@media (max-height:760px){ h1{font-size:clamp(46px,7vw,64px)} .tagline{margin:10px 0 12px} .card{padding:14px 16px 12px} .field{margin-bottom:10px} }
-h1{font-family:var(--display);font-weight:400;font-size:clamp(54px,9vw,96px);line-height:.88;margin:0 0 6px;
-  color:var(--mustard);letter-spacing:.5px;transform:rotate(-3deg);transform-origin:left bottom;
-  text-shadow:3px 3px 0 var(--navy),-2px -2px 0 var(--navy),2px -2px 0 var(--navy),-2px 2px 0 var(--navy),6px 8px 0 rgba(35,48,74,.45)}
-.tagline{font-weight:800;color:#fff;font-size:17px;margin:14px 0 18px;text-shadow:0 2px 0 rgba(35,48,74,.6);max-width:34ch}
-.card{background:var(--card);border:3px solid var(--navy);border-radius:18px;padding:18px 18px 16px;box-shadow:7px 8px 0 var(--navy)}
-.field{margin-bottom:14px}
-.field label,.field .lbl{display:block;font-weight:900;font-size:14px;margin-bottom:6px}
-.field input[type=text]{width:100%;font:inherit;font-weight:800;font-size:17px;color:var(--navy);background:#fff;border:2.5px solid var(--navy);border-radius:12px;padding:9px 12px;outline:none}
-.field input[type=text]:focus-visible{box-shadow:0 0 0 3px var(--mustard)}
-.hint{font-size:13px;color:var(--muted);margin-top:5px;font-weight:600;line-height:1.35}
-.swatches{display:flex;gap:8px;flex-wrap:wrap}
-.swatch{width:34px;height:34px;border-radius:50%;border:3px solid var(--navy);cursor:pointer;padding:0}
-.swatch[aria-pressed="true"]{box-shadow:0 0 0 3px var(--card),0 0 0 6px var(--navy);transform:scale(1.05)}
-.swatch:focus-visible{outline:3px solid var(--mustard);outline-offset:3px}
-.row{display:flex;align-items:center;gap:10px;font-weight:800;font-size:15px;margin:2px 0 14px;cursor:pointer}
-.row input{width:20px;height:20px;accent-color:var(--tomato)}
-#play{width:100%;font-family:var(--display);font-size:30px;color:#fff;background:var(--tomato);border:3px solid var(--navy);
-  border-radius:14px;padding:8px 0 10px;cursor:pointer;box-shadow:0 6px 0 var(--navy);transition:transform .06s,box-shadow .06s}
-#play:hover{filter:brightness(1.05)}
-#play:active{transform:translateY(4px);box-shadow:0 2px 0 var(--navy)}
-#play:focus-visible{outline:3px solid var(--mustard);outline-offset:3px}
-#play:disabled{opacity:.7;cursor:progress}
-#netnote{margin-top:12px;font-size:13px;font-weight:700;color:var(--muted);line-height:1.4}
-.keys{margin-top:16px;color:#fff;font-weight:800;font-size:14px;text-shadow:0 2px 0 rgba(35,48,74,.7);line-height:1.6}
-kbd{font-family:var(--body);font-weight:900;font-size:12px;background:#fff;color:var(--navy);border:2px solid var(--navy);border-bottom-width:4px;border-radius:7px;padding:0 6px;margin:0 1px;text-shadow:none}
+.menu-inner{width:min(400px,100%);margin:auto 0;animation:rise 250ms var(--ease) both}
+.brand{margin:0 0 18px}
+.brand h1{margin:0;font:italic 800 clamp(52px,6.4vw,78px)/.84 var(--display);letter-spacing:.01em;text-transform:uppercase;color:var(--text);text-shadow:0 2px 18px rgba(0,0,0,.35)}
+.brand h1 span{color:var(--hot)}
+.tagline{margin:12px 0 0;font-size:15px;color:rgba(243,245,249,.86);max-width:34ch;text-shadow:0 1px 8px rgba(0,0,0,.4)}
+.card{padding:20px}
+.field{margin-bottom:16px}
+.field input[type=text]{width:100%;font:600 16px/1.2 var(--body);color:var(--text);background:var(--fill);border:1px solid rgba(255,255,255,.16);
+  border-radius:var(--r);padding:11px 12px;outline:none;-webkit-user-select:text;user-select:text;
+  transition:border-color var(--t) var(--ease),box-shadow var(--t) var(--ease),background-color var(--t) var(--ease)}
+.field input[type=text]::placeholder{color:rgba(243,245,249,.38)}
+@media (hover:hover){ .field input[type=text]:hover{border-color:rgba(255,255,255,.26)} }
+.field input[type=text]:focus-visible{border-color:var(--gold);box-shadow:0 0 0 3px rgba(255,197,61,.22);background:rgba(255,255,255,.1)}
+.hint{font-size:12.5px;color:var(--muted);margin-top:7px;line-height:1.4}
+.swatches{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px}
+.swatch{width:100%;max-width:40px;aspect-ratio:1;padding:0;border:0;border-radius:var(--r);cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.28);
+  transition:transform var(--t) var(--ease),box-shadow var(--t) var(--ease)}
+@media (hover:hover){ .swatch:hover{transform:translateY(-2px)} }
+.swatch[aria-pressed="true"]{box-shadow:inset 0 0 0 1px rgba(0,0,0,.28),0 0 0 2px var(--bg),0 0 0 4px var(--text)}
+.swatch:focus-visible{outline:2px solid var(--gold);outline-offset:5px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 16px;font-size:14px;font-weight:500;cursor:pointer}
+.switch{-webkit-appearance:none;appearance:none;position:relative;flex:none;width:40px;height:22px;margin:0;border-radius:var(--r);background:rgba(255,255,255,.18);
+  cursor:pointer;transition:background-color var(--t) var(--ease)}
+.switch::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:var(--r);background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform var(--t) var(--ease)}
+.switch:checked{background:var(--hot)}
+.switch:checked::after{transform:translateX(18px)}
+.switch:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.qrow{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:14px;font-weight:500}
+.qrow .seg{flex:none;width:150px}
+#qNote,#qNote2{color:var(--gold)}
+#qNote:empty,#qNote2:empty{display:none}
+#play{position:relative;width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 0 12px;border:0;border-radius:var(--r);
+  font:italic 800 26px/1 var(--display);letter-spacing:.04em;text-transform:uppercase;color:#fff;background:var(--hot);cursor:pointer;
+  box-shadow:0 8px 22px rgba(255,90,60,.32);transition:transform var(--t) var(--ease),filter var(--t) var(--ease),box-shadow var(--t) var(--ease)}
+@media (hover:hover){ #play:hover{filter:brightness(1.07);transform:translateY(-1px)} }
+#play:active{transform:translateY(1px);box-shadow:0 4px 12px rgba(255,90,60,.3)}
+#play:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+#play:disabled{cursor:progress;filter:saturate(.75);transform:none}
+#play.busy::before{content:"";width:16px;height:16px;border-radius:50%;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;animation:spin .8s linear infinite}
+#netnote{margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.45}
+#loadnote{margin-top:8px;color:var(--gold)}
+#loadnote[hidden]{display:none}
+.keys{margin-top:14px;font-size:13px;line-height:2;color:rgba(243,245,249,.9);text-shadow:0 1px 6px rgba(0,0,0,.5)}
+.keys .kb{display:flex;flex-wrap:wrap;column-gap:14px}
+.keys .kb > span{white-space:nowrap}
+.keys .touch{display:none}
+kbd{display:inline-block;min-width:24px;padding:0 6px;margin:0 1px;font:600 12px/22px var(--body);text-align:center;color:var(--text);
+  background:var(--panel-solid);border:1px solid rgba(255,255,255,.18);border-radius:var(--r);text-shadow:none}
 
-/* ---------- HUD ---------- */
+/* ---------- HUD ----------
+   One grid fills the safe area; every HUD block sits in its own cell,
+   so blocks can never overlap. Desktop: top row = clock | feed | board,
+   bottom row = help | weapon slot. Phones: stacked (see max-width:820px). */
+#hud{position:fixed;inset:0;display:grid;pointer-events:none;gap:10px 12px;
+  padding:calc(var(--pad) + var(--sat)) calc(var(--pad) + var(--sar)) calc(16px + var(--sab)) calc(var(--pad) + var(--sal));
+  grid-template-columns:minmax(0,1fr) minmax(0,440px) minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr) auto auto;
+  grid-template-areas:"tl feed board" "mid mid mid" "toast toast toast" "help slot .";}
 #hud[hidden],#results[hidden]{display:none}
-.chip{background:var(--navy-90);color:var(--cream);border-radius:14px;padding:8px 12px;box-shadow:0 3px 0 rgba(0,0,0,.18)}
-#tl{position:fixed;left:max(12px,env(safe-area-inset-left,0px));top:calc(12px + env(safe-area-inset-top,0px));display:flex;flex-direction:column;gap:6px;align-items:flex-start;pointer-events:none}
-#timer{font-family:var(--display);font-size:38px;line-height:1;background:var(--mustard);color:var(--navy);border:3px solid var(--navy);border-radius:14px;padding:4px 12px 6px;box-shadow:4px 4px 0 var(--navy);min-width:110px;text-align:center}
-#timer.low{background:var(--tomato);color:#fff}
-#roominfo{font-size:13px;font-weight:800}
-#board{position:fixed;right:max(12px,env(safe-area-inset-right,0px));top:calc(12px + env(safe-area-inset-top,0px));list-style:none;margin:0;padding:8px 10px;min-width:190px;pointer-events:none}
-#board li{display:flex;align-items:center;gap:8px;font-weight:800;font-size:15px;padding:3px 2px}
-#board li.me{color:var(--mustard)}
-#board .rk{width:18px;text-align:right;opacity:.7;font-size:13px}
-#board .dot{width:12px;height:12px;border-radius:50%;border:2px solid var(--cream);flex:none}
-#board .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
-#board .sc{font-family:var(--display);font-size:19px;min-width:22px;text-align:right}
-#feed{position:fixed;left:50%;transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));display:flex;flex-direction:column;align-items:center;gap:4px;pointer-events:none;width:min(420px,46vw)}
-#feed div{font-weight:800;font-size:14px;padding:4px 10px;border-radius:10px;background:var(--navy-90);color:var(--cream);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-#feed div.mine{background:var(--tomato);color:#fff}
-#slot{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;gap:12px;pointer-events:none;padding:8px 16px 8px 8px}
-#slotIcon{width:58px;height:58px;border-radius:50%;background:var(--violet);border:3px solid var(--cream);display:grid;place-items:center;font-size:30px}
-#slot.empty #slotIcon{background:rgba(255,255,255,.12);border-style:dashed;font-family:var(--display);color:var(--cream);font-size:28px}
-#slotName{display:block;font-family:var(--display);font-size:22px;line-height:1.05}
-#slotSub{font-size:13px;font-weight:800;opacity:.85}
-#slot.flash{animation:pop .35s ease-out}
-@keyframes pop{0%{transform:translateX(-50%) scale(1.25)}100%{transform:translateX(-50%) scale(1)}}
-#center{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);text-align:center;pointer-events:none}
-#bigmsg{font-family:var(--display);font-size:clamp(34px,6vw,56px);color:#fff;text-shadow:3px 3px 0 var(--navy),-2px -2px 0 var(--navy),2px -2px 0 var(--navy),-2px 2px 0 var(--navy)}
-#submsg{font-weight:900;font-size:18px;color:#fff;text-shadow:0 2px 0 var(--navy);margin-top:4px}
-#toast{position:fixed;left:50%;top:24%;transform:translateX(-50%);font-family:var(--display);font-size:30px;color:var(--mustard);text-shadow:3px 3px 0 var(--navy),-2px -2px 0 var(--navy),2px -2px 0 var(--navy),-2px 2px 0 var(--navy);pointer-events:none;opacity:0;transition:opacity .2s}
-#toast.on{opacity:1}
-#help{position:fixed;left:max(12px,env(safe-area-inset-left,0px));bottom:calc(14px + env(safe-area-inset-bottom,0px));font-size:13px;font-weight:800;pointer-events:none;transition:opacity .6s}
+#hud > *{min-width:0}
+#tl,#board,#feed{align-self:start}  /* (not on the fixed touch layers: it would shrink them) */
+#tl{grid-area:tl;position:relative;z-index:2;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.tl-row{display:flex;gap:8px;align-items:stretch}
+#timer{min-width:96px;padding:8px 14px 7px;font:700 34px/1 var(--display);font-variant-numeric:tabular-nums;letter-spacing:.01em;text-align:center;
+  transition:background-color var(--t) var(--ease),color var(--t) var(--ease),border-color var(--t) var(--ease)}
+#timer.low{background:var(--hot);border-color:transparent;color:#fff}
+.iconbtn{pointer-events:auto;display:grid;place-items:center;width:46px;padding:0;border-radius:var(--r);color:var(--text);cursor:pointer;
+  transition:background-color var(--t) var(--ease),color var(--t) var(--ease)}
+.iconbtn[aria-expanded="true"]{background:var(--text);color:var(--bg)}
+@media (hover:hover){ .iconbtn:hover{background:var(--text);color:var(--bg)} }
+.iconbtn svg{width:20px;height:20px}
+#roominfo{max-width:100%;padding:7px 12px;font-size:13px;line-height:1.35}
+#roominfo span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#roominfo span[hidden]{display:none}
+.ri-a{font-weight:600}
+.ri-a b{font-weight:600;color:var(--muted);margin-right:5px;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.ri-b{color:var(--muted)}
+.ri-b.warn{color:var(--gold)}
+#setPanel{pointer-events:auto;width:224px;max-width:100%;padding:12px;display:grid;gap:12px;animation:rise var(--t) var(--ease)}
+#setPanel[hidden]{display:none}
+#setPanel .lbl{margin-bottom:6px}
+/* grid layouts: the panel floats under the clock instead of growing the top row (which pushed the slot off short screens) */
+@media (min-width:821px){ #setPanel{position:absolute;top:calc(100% + 8px);left:0} }
+#board{grid-area:board;justify-self:end;width:244px;max-width:100%;list-style:none;margin:0;padding:6px}
+#board li,#standings li{display:flex;align-items:center;gap:9px;padding:0 9px;border-radius:var(--r);font-weight:600}
+#board li{height:30px;font-size:14px}
+li.me{background:rgba(255,197,61,.15);color:var(--gold)}
+.rk{flex:none;width:14px;text-align:right;font:700 15px/1 var(--display);font-variant-numeric:tabular-nums;color:var(--muted)}
+li.me .rk{color:var(--gold)}
+.dot{flex:none;width:10px;height:10px;border-radius:var(--r);box-shadow:0 0 0 2px rgba(255,255,255,.9)}
+.nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.you{flex:none;padding:3px 5px 2px;border-radius:var(--r);background:var(--gold);color:var(--bg);font-size:9.5px;font-weight:700;line-height:1;letter-spacing:.08em;text-transform:uppercase}
+.sc{flex:none;min-width:20px;text-align:right;font:700 20px/1 var(--display);font-variant-numeric:tabular-nums;color:var(--text)}
+li.me .sc{color:var(--gold)}
+#feed{grid-area:feed;justify-self:center;width:100%;display:flex;flex-direction:column;align-items:center;gap:5px}
+#feed div{max-width:100%;padding:5px 11px;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:feedIn var(--t) var(--ease)}
+#feed b{font-weight:600;color:var(--text)}
+#feed div.mine{background:var(--hot);border-color:transparent;color:var(--bg);font-weight:600}  /* dark text on --hot: ~6:1 (white is only 3.1:1) */
+#feed div.mine b{color:var(--bg);font-weight:700}
+#feed div.sys{font-style:italic}
+#mid{grid-area:mid;align-self:stretch;display:grid;place-items:start center;padding-top:clamp(4px,4vh,48px);min-height:0}  /* messages sit above your kart, not on it */
+#center{max-width:100%;padding:14px 26px 15px;text-align:center;opacity:0;transform:scale(.96);transition:opacity var(--t) var(--ease),transform var(--t) var(--ease)}
+#center.on{opacity:1;transform:none}
+#bigmsg{font:italic 800 clamp(34px,4.6vw,52px)/1 var(--display);letter-spacing:.01em;text-transform:uppercase;overflow-wrap:anywhere}
+#center.go #bigmsg{color:var(--gold)}
+#center.dead #bigmsg{color:#fff}
+#submsg{margin-top:6px;font-size:16px;font-weight:600;color:var(--muted)}
+#submsg:empty{display:none}
+#toast{grid-area:toast;justify-self:center;max-width:100%;padding:10px 16px;font-size:15px;font-weight:600;text-align:center;
+  opacity:0;transform:translateY(6px);transition:opacity var(--t) var(--ease),transform var(--t) var(--ease)}
+#toast.on{opacity:1;transform:none}
+#toast:empty{visibility:hidden}
+#help{grid-area:help;align-self:end;justify-self:start;max-width:380px;padding:9px 12px;font-size:13px;color:var(--muted);transition:opacity 250ms var(--ease)}
+#help b{color:var(--text);font-weight:600}
+#slot{grid-area:slot;justify-self:center;align-self:end;display:flex;align-items:center;gap:12px;min-width:240px;max-width:100%;padding:8px 16px 8px 8px}
+#slotIcon{position:relative;flex:none;display:grid;place-items:center;width:52px;height:52px;border-radius:var(--r);background:var(--violet);color:#fff;
+  box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
+#slotIcon svg{width:30px;height:30px}
+#slotGlyph,#fireIcon{display:grid;place-items:center}
+#slotCount{position:absolute;top:-7px;right:-7px;min-width:21px;height:21px;padding:0 6px;border-radius:var(--r);background:var(--gold);color:var(--bg);
+  font:700 15px/21px var(--display);text-align:center;box-shadow:0 0 0 2px var(--bg)}
+#slotCount:empty{display:none}
+.slotTxt{min-width:0}
+#slotName{display:block;font:700 22px/1.05 var(--display);letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#slotSub{display:block;margin-top:2px;font-size:12.5px;color:var(--muted)}
+#slot.empty #slotIcon{background:transparent;box-shadow:none;color:var(--muted)}
+#slot.empty #slotName{color:var(--muted)}
+#slot.flash{animation:pop 220ms var(--ease)}
+#slot.flash #slotIcon{animation:glow 250ms var(--ease)}
+#hud.over > :not(#toast){visibility:hidden}
 
-#results{position:fixed;inset:0;display:grid;place-items:center;background:rgba(35,48,74,.45);padding:20px}
-#results .card{width:min(440px,100%);text-align:left}
-#results h2{font-family:var(--display);font-weight:400;font-size:40px;margin:0;line-height:1;color:var(--tomato)}
-#results .win{font-weight:900;font-size:17px;margin:6px 0 12px}
-#standings{list-style:none;padding:0;margin:0 0 12px}
-#standings li{display:flex;gap:10px;align-items:center;font-weight:800;font-size:16px;padding:5px 0;border-bottom:2px dashed rgba(92,103,128,.3)}
-#standings li:last-child{border-bottom:none}
-#standings .sc{margin-left:auto;font-family:var(--display);font-size:22px}
-#standings .dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--navy)}
-#next{font-weight:800;color:var(--muted)}
+#results{position:fixed;inset:0;z-index:10;display:grid;place-items:center;overflow-y:auto;background:rgba(7,10,17,.55);
+  padding:calc(16px + var(--sat)) calc(16px + var(--sar)) calc(16px + var(--sab)) calc(16px + var(--sal));animation:fade var(--t) var(--ease)}
+#results .card{width:min(420px,100%);padding:22px;animation:rise 250ms var(--ease)}
+#results .lbl{margin:0}
+#results h2{margin:2px 0 4px;font:italic 800 44px/1 var(--display);text-transform:uppercase}
+#results .win{margin:0 0 14px;font-size:15px;color:var(--muted)}
+#standings{list-style:none;margin:0 0 16px;padding:0;display:grid;gap:2px}
+#standings li{height:36px;font-size:15px;background:var(--fill)}
+#standings li.me{background:rgba(255,197,61,.15)}
+#standings .sc{font-size:22px}
+#next{font-size:13px;color:var(--muted)}
+.bar{height:4px;margin-top:8px;border-radius:var(--r);background:var(--fill);overflow:hidden}
+#nextBar{height:100%;width:100%;background:var(--hot);transform-origin:left;transition:transform 150ms linear}
 
-/* touch */
-#touchzone{position:fixed;left:0;top:0;bottom:0;width:55%;display:none;touch-action:none}
-#stick{position:fixed;width:120px;height:120px;border-radius:50%;border:3px solid rgba(255,255,255,.7);background:rgba(35,48,74,.25);display:none;pointer-events:none;transform:translate(-50%,-50%)}
-#knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:var(--cream);border:3px solid var(--navy)}
-#fireBtn{position:fixed;right:calc(22px + env(safe-area-inset-right,0px));bottom:calc(30px + env(safe-area-inset-bottom,0px));width:96px;height:96px;border-radius:50%;
-  background:var(--tomato);color:#fff;border:4px solid var(--navy);font-family:var(--display);font-size:24px;box-shadow:0 6px 0 var(--navy);display:none;touch-action:none}
-#fireBtn:active{transform:translateY(4px);box-shadow:0 2px 0 var(--navy)}
-@media (pointer:coarse){ body.playing #touchzone,body.playing #fireBtn{display:block} #help{display:none} }
-@media (max-width:640px){
-  #board{min-width:0;font-size:13px} #board li{font-size:13px} #board .nm{max-width:78px}
-  #timer{font-size:30px;min-width:88px} #feed{top:auto;bottom:calc(98px + env(safe-area-inset-bottom,0px));width:70vw}
-  #menu{align-items:flex-start}
-  #slot{left:max(12px,env(safe-area-inset-left,0px));transform:none;top:calc(104px + env(safe-area-inset-top,0px));bottom:auto;padding:6px 12px 6px 6px}
-  #slotIcon{width:44px;height:44px;font-size:22px} #slotName{font-size:18px} #slotSub{display:none}
-  @keyframes pop{0%{transform:scale(1.2)}100%{transform:scale(1)}}
+/* touch controls (shown on touch screens while playing) */
+#touchzone{position:fixed;left:0;top:0;bottom:0;width:55%;display:none;touch-action:none;z-index:0;pointer-events:auto}
+#stick{position:fixed;z-index:1;width:120px;height:120px;border-radius:50%;border:2px solid rgba(255,255,255,.6);background:rgba(13,18,28,.32);
+  display:none;pointer-events:none;transform:translate(-50%,-50%)}
+#knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:rgba(243,245,249,.96);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+#fireBtn{position:fixed;z-index:3;right:calc(20px + var(--sar));bottom:calc(26px + var(--sab));width:92px;height:92px;border-radius:50%;border:0;padding:0;
+  display:none;flex-direction:column;align-items:center;justify-content:center;gap:3px;pointer-events:auto;touch-action:none;cursor:pointer;
+  background:var(--hot);color:var(--bg);font:italic 800 17px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;
+  box-shadow:0 0 0 4px rgba(255,255,255,.2),0 8px 22px rgba(0,0,0,.35);transition:transform 150ms var(--ease),background-color var(--t) var(--ease),color var(--t) var(--ease)}
+#fireBtn svg{width:30px;height:30px;pointer-events:none}
+#fireBtn span{pointer-events:none}
+#fireBtn:active{transform:scale(.93)}
+#fireBtn.dim{background:var(--panel-solid);color:var(--muted);box-shadow:0 0 0 2px rgba(255,255,255,.16),0 8px 22px rgba(0,0,0,.3)}
+
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes feedIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@keyframes pop{from{transform:scale(1.1)}to{transform:scale(1)}}
+@keyframes glow{from{box-shadow:0 0 0 8px rgba(143,107,255,.45)}to{box-shadow:0 0 0 0 rgba(143,107,255,0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+@media (pointer:coarse){
+  body.playing #touchzone{display:block} body.playing #fireBtn{display:flex} #help{display:none}
+  .keys .kb{display:none} .keys .touch{display:inline}
 }
-@media (prefers-reduced-motion: reduce){ #slot.flash{animation:none} #play{transition:none} }
+/* large screens: slightly bigger HUD */
+@media (min-width:1600px) and (min-height:900px){
+  #timer{font-size:42px;min-width:116px} .iconbtn{width:54px} .iconbtn svg{width:24px;height:24px} #roominfo{font-size:14px}
+  #board{width:290px} #board li{height:36px;font-size:16px} #board .sc{font-size:23px} #help{font-size:14px}
+  #feed div{font-size:15px} #slotIcon{width:60px;height:60px} #slotIcon svg{width:34px;height:34px} #slotName{font-size:26px} #slotSub{font-size:13.5px}
+}
+/* phones and narrow windows: stack the HUD top-down, slot under the clock */
+@media (max-width:820px){
+  #menu{background:linear-gradient(180deg,rgba(9,13,21,.82) 0,rgba(9,13,21,.7) 55%,rgba(9,13,21,.45) 100%)}
+  .menu-inner{margin:auto}
+  #hud{--pad:10px;gap:8px;grid-template-columns:minmax(0,1fr) auto;
+    grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
+    grid-template-areas:"tl board" "slot slot" "feed feed" "mid mid" "toast toast" "help help"}
+  #timer{font-size:28px;min-width:80px;padding:7px 10px 6px}
+  .iconbtn{width:40px}
+  #roominfo{padding:6px 10px;font-size:12px}
+  #setPanel{width:100%;padding:10px;gap:10px}
+  #board{width:178px;padding:5px} #board li{height:27px;gap:7px;padding:0 7px;font-size:13px}
+  .sc{font-size:18px} .you{padding:2px 4px 1px;font-size:8.5px}
+  #bigmsg{font-size:32px}
+  #slot{justify-self:start;min-width:0;padding:6px 12px 6px 6px;gap:10px}
+  #slotIcon{width:42px;height:42px} #slotIcon svg{width:24px;height:24px}
+  #slotName{font-size:18px} #slotSub{font-size:12px}
+  #feed div{font-size:12.5px;padding:4px 9px}
+  #center{padding:12px 20px 13px}
+  #mid{padding-top:4px}
+  #hud:has(#tl.setopen) #feed{visibility:hidden}  /* the open settings panel pushes the feed onto your kart */
+  #toast{font-size:14px}
+}
+@media (max-width:820px) and (pointer:coarse){
+  #hud{padding-bottom:calc(26px + 92px + 14px + var(--sab))}  /* keep the bottom clear for the Fire button */
+}
+/* short screens: compact menu so it fits without scrolling */
+@media (max-height:820px){
+  #menu{padding-top:calc(20px + var(--sat));padding-bottom:calc(20px + var(--sab))}
+  .brand{margin-bottom:14px} .brand h1{font-size:clamp(44px,8.5vh,70px)} .tagline{margin-top:8px}
+  .card{padding:16px 18px} .field{margin-bottom:12px} .row{margin-bottom:12px}
+  .field input[type=text]{padding:9px 12px} #play{padding:11px 0 10px} .keys{margin-top:10px}
+}
+@media (max-height:760px){ .tagline{display:none} }
+@media (max-height:560px){ .brand h1{font-size:40px} .card{padding:14px} }
+/* short screens: compact results card so the countdown stays on screen (8 standings in two columns) */
+@media (max-height:500px){
+  #results .card{width:min(560px,100%);padding:14px 18px} #results h2{font-size:30px} #results .win{margin-bottom:8px}
+  #standings{grid-template-columns:1fr 1fr;column-gap:6px;margin-bottom:10px} #standings li{height:28px;font-size:14px} #standings .sc{font-size:18px}
+}
+/* phones held sideways and other short landscape windows. HUD: clock | feed | board on top, the centre
+   message right under the feed, weapon slot bottom-left, toast bottom-centre; the middle stays clear for
+   your kart and the bottom-right for the Fire button (so no bottom reserve). Menu: brand left, card right. */
+@media (max-height:500px) and (orientation:landscape){
+  #hud{--pad:10px;gap:6px 12px;grid-template-columns:minmax(0,1fr) minmax(0,360px) minmax(0,1fr);
+    grid-template-rows:auto auto minmax(0,1fr) auto;
+    grid-template-areas:"tl feed board" "tl mid board" ". . board" "slot toast help";padding-bottom:calc(10px + var(--sab))}
+  #mid{align-self:start;padding-top:0}
+  #center{padding:8px 18px 9px} #bigmsg{font-size:28px} #submsg{margin-top:4px;font-size:14px}
+  #feed div:nth-last-child(n+3){display:none}  /* newest two lines only */
+  #slot{justify-self:start;min-width:0}
+  #toast{align-self:end}
+  #help{justify-self:end}
+  #setPanel{position:absolute;top:calc(100% + 8px);left:0}
+  #tl.setopen #roominfo{display:none}  /* the open settings panel takes the room info's place */
+  #menu{padding:calc(12px + var(--sat)) calc(16px + var(--sar)) calc(12px + var(--sab)) calc(16px + var(--sal))}
+  .menu-inner{width:min(780px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr);grid-template-rows:auto 1fr;column-gap:20px;align-items:start}
+  .brand{grid-column:1;grid-row:1;margin:0}
+  .keys{grid-column:1;grid-row:2;margin-top:12px;line-height:1.6}
+  .keys .kb{row-gap:4px}
+  #menu .card{grid-column:2;grid-row:1 / span 2;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:16px;align-items:start;
+    grid-template-areas:"name room" "color color" "bots q" "play note";padding:12px 14px}
+  .f-name{grid-area:name} .f-room{grid-area:room} .f-color{grid-area:color} #menu .row{grid-area:bots} .qfield{grid-area:q}
+  #menu .field,#menu .row{margin-bottom:10px}
+  .f-room .hint{display:none}
+  .qrow .seg{width:130px}
+  #play{grid-area:play;padding:10px 0 9px;font-size:24px}
+  #netnote{grid-area:note;align-self:center;margin:0}
+  #loadnote{grid-column:1 / -1}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:1ms!important;animation-iteration-count:1!important;transition-duration:1ms!important}
+}
 </style>
 </head>
 <body>
@@ -123,55 +311,111 @@ kbd{font-family:var(--body);font-weight:900;font-size:12px;background:#fff;color
 
 <div id="menu">
   <div class="menu-inner">
-    <h1>Scrap<br>Karts</h1>
-    <p class="tagline">Three-minute kart brawls. Grab a box, fire, get bonked, go again.</p>
-    <div class="card">
-      <div class="field">
-        <label for="nameIn">Your name</label>
+    <div class="brand">
+      <h1>Scrap<br><span>Karts</span></h1>
+      <p class="tagline">Three-minute kart brawls. Grab a box, fire, get bonked, go again.</p>
+    </div>
+    <div class="card panel">
+      <div class="field f-name">
+        <label class="lbl" for="nameIn">Your name</label>
         <input id="nameIn" type="text" maxlength="14" autocomplete="off" spellcheck="false" placeholder="Driver">
       </div>
-      <div class="field">
+      <div class="field f-color">
         <span class="lbl" id="colorLbl">Kart colour</span>
         <div class="swatches" id="swatches" role="group" aria-labelledby="colorLbl"></div>
       </div>
-      <div class="field">
-        <label for="roomIn">Room code</label>
+      <div class="field f-room">
+        <label class="lbl" for="roomIn">Room code</label>
         <input id="roomIn" type="text" maxlength="20" autocomplete="off" spellcheck="false" value="arena">
         <div class="hint">Friends who type the same code land in the same match.</div>
       </div>
-      <label class="row"><input type="checkbox" id="botsIn" checked> Bots fill in while nobody else is here</label>
-      <button id="play" type="button">Play</button>
-      <div id="netnote">Checking for online play…</div>
+      <label class="row" for="botsIn"><span>Bots fill in while nobody else is here</span><input type="checkbox" class="switch" id="botsIn" checked></label>
+      <div class="field qfield">
+        <div class="qrow"><span id="qLbl">Graphics quality</span><div class="seg qseg" role="group" aria-labelledby="qLbl"><button type="button" data-q="low" aria-pressed="false">Low</button><button type="button" data-q="high" aria-pressed="true">High</button></div></div>
+        <div class="hint" id="qNote"></div>
+      </div>
+      <button id="play" type="button" class="busy" disabled>Loading…</button>
+      <div id="netnote">Loading the 3D engine…</div>
+      <div id="loadnote" class="hint" role="alert" hidden></div>
     </div>
-    <div class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to drive, <kbd>Space</kbd> to fire, <kbd>M</kbd> to mute</div>
+    <div class="keys"><span class="kb"><span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to drive</span><span><kbd>Space</kbd> to fire</span><span><kbd>M</kbd> to mute</span></span><span class="touch">Drag on the left half to steer, tap Fire to shoot</span></div>
   </div>
 </div>
 
 <div id="hud" hidden>
-  <div id="tl"><div id="timer">3:00</div><div id="roominfo" class="chip"></div></div>
-  <ol id="board" class="chip"></ol>
-  <div id="feed"></div>
-  <div id="slot" class="chip empty"><div id="slotIcon">?</div><div><span id="slotName">Empty</span><span id="slotSub">Drive through a ? box</span></div></div>
-  <div id="center"><div id="bigmsg"></div><div id="submsg"></div></div>
-  <div id="toast"></div>
-  <div id="help" class="chip">Drive through ? boxes for a weapon. Space fires.</div>
+  <div id="tl">
+    <div class="tl-row">
+      <div id="timer" class="panel" role="timer" aria-label="Round time left">3:00</div>
+      <button id="setBtn" class="panel iconbtn" type="button" aria-label="Settings" aria-expanded="false" aria-controls="setPanel"></button>
+    </div>
+    <div id="roominfo" class="panel"><span class="ri-a"></span><span class="ri-b"></span></div>
+    <div id="setPanel" class="panel" hidden>
+      <div><span class="lbl" id="qLbl2">Graphics</span><div class="seg qseg" role="group" aria-labelledby="qLbl2"><button type="button" data-q="low" aria-pressed="false">Low</button><button type="button" data-q="high" aria-pressed="true">High</button></div><div class="hint" id="qNote2"></div></div>
+      <div><span class="lbl" id="sLbl">Sound</span><div class="seg" id="sndSeg" role="group" aria-labelledby="sLbl"><button type="button" data-snd="on" aria-pressed="true">On</button><button type="button" data-snd="off" aria-pressed="false">Off</button></div></div>
+    </div>
+  </div>
+  <ol id="board" class="panel" aria-label="Scoreboard"></ol>
+  <div id="feed" aria-live="polite"></div>
+  <div id="slot" class="panel empty"><div id="slotIcon"><span id="slotGlyph"></span><span id="slotCount"></span></div><div class="slotTxt"><span id="slotName">Empty</span><span id="slotSub">Drive through a ? box</span></div></div>
+  <div id="mid"><div id="center" class="panel"><div id="bigmsg"></div><div id="submsg"></div></div></div>
+  <div id="toast" class="panel" role="status"></div>
+  <div id="help" class="panel">Drive through <b>?</b> boxes for a weapon. <b>Space</b> fires.</div>
   <div id="touchzone"></div>
   <div id="stick"><div id="knob"></div></div>
-  <button id="fireBtn" type="button">Fire</button>
+  <button id="fireBtn" type="button" class="dim" aria-label="Fire"><span id="fireIcon"></span><span>Fire</span></button>
 </div>
 
 <div id="results" hidden>
-  <div class="card">
-    <h2>Round over</h2>
-    <div class="win" id="winLine"></div>
+  <div class="card panel">
+    <span class="lbl">Round over</span>
+    <h2 id="winLine"></h2>
+    <p class="win" id="winSub"></p>
     <ol id="standings"></ol>
     <div id="next"></div>
+    <div class="bar"><div id="nextBar"></div></div>
   </div>
 </div>
 
 <noscript>Scrap Karts needs JavaScript to run.</noscript>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
+/* Loading watchdog. A classic script, so it still runs when the three.js modules never arrive.
+   Play stays disabled ("Loading…") until the game module has drawn its first frame (it then sets window.__skReady). */
+(function () {
+  function say(msg, failed) {
+    if (window.__skReady) return;
+    var n = document.getElementById('loadnote'), b = document.getElementById('play');
+    if (n && !n.dataset.failed) { n.textContent = msg; n.hidden = false; if (failed) n.dataset.failed = '1'; }
+    if (failed && b) { b.textContent = 'Can’t load'; b.classList.remove('busy'); document.getElementById('netnote').hidden = true; }
+  }
+  setTimeout(function () { say('The 3D engine (from cdn.jsdelivr.net) is taking a long time to load. If nothing happens, check your connection or try another network, then reload.'); }, 20000);
+  // a module that fails to download fires "error" on its <script> element (it does not bubble, so capture it)
+  document.addEventListener('error', function (e) {
+    var s = e.target; if (s && s.tagName === 'SCRIPT' && s.type === 'module') say('Couldn’t load the 3D engine from cdn.jsdelivr.net. Check your connection or try another network, then reload.', true);
+  }, true);
+  addEventListener('error', function (e) { if (e.error) say('The game couldn’t start in this browser. Try reloading, or use an up-to-date Chrome, Edge, Firefox or Safari.', true); });
+})();
+</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<!-- three.module.js imports three.core.js: fetch both at once instead of one after the other (after the import map, so it still applies) -->
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js" crossorigin>
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.core.js" crossorigin>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 'use strict';
 /* =========================================================================
    Scrap Karts: an arena kart brawler.
@@ -267,149 +511,1101 @@ const DEF = {
 const DIRECT = { r: 1, n: 1, g: 1, f: 1 };
 
 /* ---------- three.js scene ---------- */
+/* =========================================================================
+   RENDER PIPELINE: renderer, lights, environment, quality levels, post-fx.
+   Everything above the three.js scene marker must stay free of THREE/DOM
+   (test/physics.test.js runs that code in Node).
+   ========================================================================= */
 const canvas = $('#c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderDebug = /[?&]debug(?:[=&]|$)/.test(location.search);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: false, powerPreference: 'high-performance' });
+renderer.debug.checkShaderErrors = renderDebug; // skip the extra shader-validation round trip outside ?debug
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap; // r186: PCF is soft via shadow.radius (PCFSoftShadowMap was removed)
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // applied once, by OutputPass at the end of the post chain
+renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#A9D8EA');
-scene.fog = new THREE.Fog('#A9D8EA', 130, 280);
-const camera = new THREE.PerspectiveCamera(58, 1, 0.5, 600);
+const camera = new THREE.PerspectiveCamera(58, 1, 0.5, 900);
 camera.position.set(0, 60, 90);
-function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.fov = camera.aspect < 1 ? 74 : 58; camera.updateProjectionMatrix(); }
-addEventListener('resize', resize); resize();
+// image-based lighting from a neutral studio room
+{
+  const pmrem = new THREE.PMREMGenerator(renderer), room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose(); pmrem.dispose();
+}
+scene.environmentIntensity = 0.5;
 
-scene.add(new THREE.HemisphereLight('#E6F4FF', '#6B5A45', 0.75));
-const sun = new THREE.DirectionalLight('#FFF1D6', 0.85);
+const resizeHooks = []; // fn(w, h) — post-processing registers here
+// Pixel ratio per quality: High uses up to 1.75x but keeps the render under ~2.6 MP (big laptop
+// screens would otherwise pay for 5+ MP of post-processing); Low renders at 1x.
+const MAX_PIXELS_HIGH = 2.6e6;
+function targetPixelRatio(w, h) {
+  const dpr = window.devicePixelRatio || 1;
+  if (QUALITY.level !== 'high') return Math.min(dpr, 1);
+  return Math.max(Math.min(dpr, 1), Math.min(dpr, 1.75, Math.sqrt(MAX_PIXELS_HIGH / Math.max(1, w * h))));
+}
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setPixelRatio(targetPixelRatio(w, h)); renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.fov = camera.aspect < 1 ? 74 : 58; camera.updateProjectionMatrix();
+  for (const f of resizeHooks) f(w, h);
+}
+addEventListener('resize', resize);
+
+const hemi = new THREE.HemisphereLight('#E3F1FF', '#76624A', 1.05); // cool sky fill, warm bounce from the ground
+scene.add(hemi);
+const sun = new THREE.DirectionalLight('#FFEBCC', 2.7);   // warm late-morning sun
 sun.position.set(40, 80, 25); sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -78, right: 78, top: 78, bottom: -78, near: 10, far: 200 });
-sun.shadow.bias = -0.0008;
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.04; sun.shadow.radius = 2.5;
 scene.add(sun);
 
-const lam = c => new THREE.MeshLambertMaterial({ color: c });
-function canvasTex(w, h, draw, repeat) {
+// Quality: 'high' | 'low'. setQuality() applies it and tells every listener (post-fx, UI).
+const QUALITY = { level: 'high', auto: false, listeners: [] };
+try { const q = localStorage.getItem('scrapkarts.quality'); if (q === 'low' || q === 'high') QUALITY.level = q; } catch (e) {}
+function onQuality(fn) { QUALITY.listeners.push(fn); fn(QUALITY.level, false); }
+function setQuality(level, auto = false) {
+  if (level !== 'low' && level !== 'high') return;
+  QUALITY.level = level; QUALITY.auto = auto;
+  try { if (!auto) { localStorage.setItem('scrapkarts.quality', level); localStorage.removeItem('scrapkarts.quality.auto'); } else if (level === 'low' && !localStorage.getItem('scrapkarts.quality') && !localStorage.getItem('scrapkarts.quality.auto')) localStorage.setItem('scrapkarts.quality.auto', String(Date.now())); } catch (e) {} // a manual choice always wins; an auto drop is only a 7-day hint (menu JS)
+  for (const f of QUALITY.listeners) f(level, auto);
+}
+/* ---- post-processing: Render -> GTAO (High) -> Bloom -> SMAA -> Output (ACES + sRGB) ----
+   Every intermediate target is HalfFloat, so bloom sees HDR values: only things pushed above
+   BLOOM.threshold (item box glyphs, explosions, tracer rounds, mine lights) glow; sunlit
+   surfaces stay below it. r186's SMAAPass works in linear space, so it runs before OutputPass. */
+const BLOOM = { threshold: 1.6, high: { strength: 0.45, radius: 0.3, scale: 1 }, low: { strength: 0.4, radius: 0.2, scale: 0.5 } };
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }));
+const renderPass = new RenderPass(scene, camera);
+// GTAO (High only): world-space radius sized for karts (~2 units) and containers, at half resolution
+const AO_SCALE = 0.5;
+const gtaoPass = new GTAOPass(scene, camera, 1, 1, undefined,
+  { radius: 2.5, distanceExponent: 1.6, thickness: 3, distanceFallOff: 1, scale: 2, samples: 12 },
+  { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
+gtaoPass.blendIntensity = 1;
+const gtaoSetSize = gtaoPass.setSize.bind(gtaoPass);
+gtaoPass.setSize = (w, h) => gtaoPass.enabled ? gtaoSetSize(Math.max(1, Math.round(w * AO_SCALE)), Math.max(1, Math.round(h * AO_SCALE))) : gtaoSetSize(1, 1);
+// The AO G-buffer only wants solid geometry: hide sprites (name tags) and transparent
+// effects (smoke, explosions, shields, decals) so they don't leave dark halos. The shadow map
+// was already drawn by the main RenderPass this frame, so the G-buffer render skips it.
+const aoHidden = [];
+const aoHide = o => { if (o.visible && (o.isSprite || o.isPoints || o.isLine || (o.material && o.material.transparent))) { o.visible = false; aoHidden.push(o); } };
+gtaoPass._overrideVisibility = () => { scene.traverse(aoHide); renderer.shadowMap.autoUpdate = false; };
+gtaoPass._restoreVisibility = () => { renderer.shadowMap.autoUpdate = true; for (let i = 0; i < aoHidden.length; i++) aoHidden[i].visible = true; aoHidden.length = 0; };
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.high.strength, BLOOM.high.radius, BLOOM.threshold);
+let bloomScale = 1;
+const bloomSetSize = bloomPass.setSize.bind(bloomPass);
+bloomPass.setSize = (w, h) => bloomSetSize(Math.max(2, Math.round(w * bloomScale)), Math.max(2, Math.round(h * bloomScale)));
+const smaaPass = new SMAAPass();
+const outputPass = new OutputPass();
+for (const p of [renderPass, gtaoPass, bloomPass, smaaPass, outputPass]) composer.addPass(p);
+// The composer works in drawing-buffer pixels (whole numbers, exactly the canvas size).
+composer.setPixelRatio(1);
+const drawSize = new THREE.Vector2();
+resizeHooks.push(() => {
+  renderer.getDrawingBufferSize(drawSize);
+  composer.setSize(drawSize.x, drawSize.y); // resizes both HalfFloat targets and every pass (old GPU buffers are freed)
+});
+
+/* ---- auto quality: drop to Low once if the frame rate stays under 45 fps on High ----
+   Measures the real interval between rendered frames in one-second buckets over a rolling 8 s
+   window, and drops only when the window averages under 45 fps AND at least 7 of its 8 seconds
+   were slow, so a few seconds of outside load (another app starting, an OS spike) never count.
+   Waits a few seconds after load, game start, a quality change or the tab becoming visible again.
+   A single long frame (>250 ms: tab switch, GC, shader compile) is ignored, but back-to-back long
+   frames count (a truly slow device). Never raises quality on its own. */
+const PERF = { minFps: 45, window: 8, warmUntil: 0, last: 0, buckets: new Float32Array(8), frames: new Uint16Array(8), bi: 0, bt: 0, bn: 0, filled: 0, longPrev: false, dropped: false, dropAvg: 0, wasStarted: false, avg: 0, slow: 0, slowMs: 0 };
+function perfReset(warmSec) {
+  PERF.warmUntil = performance.now() + warmSec * 1000; PERF.last = 0;
+  PERF.bt = 0; PERF.bn = 0; PERF.bi = 0; PERF.filled = 0; PERF.longPrev = false; PERF.avg = 0;
+}
+document.addEventListener('visibilitychange', () => perfReset(2));
+function perfSample(now) {
+  if (PERF.wasStarted !== started) { PERF.wasStarted = started; perfReset(3); }
+  if (PERF.dropped || QUALITY.level !== 'high') return;
+  if (document.hidden || now < PERF.warmUntil || !PERF.last) { PERF.last = now; return; }
+  let dt = now - PERF.last; PERF.last = now;
+  if (dt > 250) { const skip = !PERF.longPrev; PERF.longPrev = true; if (skip) return; dt = Math.min(dt, 1000); }
+  else PERF.longPrev = false;
+  PERF.bt += dt; PERF.bn++;
+  if (PERF.bt < 1000) return;
+  PERF.buckets[PERF.bi] = PERF.bt; PERF.frames[PERF.bi] = PERF.bn; PERF.bi = (PERF.bi + 1) % PERF.window;
+  PERF.bt = 0; PERF.bn = 0;
+  if (PERF.filled < PERF.window) PERF.filled++;
+  if (PERF.filled < PERF.window) return;
+  let t = 0, n = 0, slow = 0;
+  for (let i = 0; i < PERF.window; i++) { t += PERF.buckets[i]; n += PERF.frames[i]; if (PERF.frames[i] * 1000 < PERF.minFps * PERF.buckets[i]) slow++; }
+  PERF.avg = n * 1000 / t; PERF.slow = slow;
+  if (PERF.avg < PERF.minFps && slow >= PERF.window - 1) { PERF.dropped = true; PERF.dropAvg = PERF.avg; setQuality('low', true); }
+}
+
+onQuality(level => {
+  const high = level === 'high', B = high ? BLOOM.high : BLOOM.low;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  sun.shadow.radius = high ? 2.5 : 1.5;
+  const size = high ? 2048 : 1024;
+  if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  gtaoPass.enabled = high;            // AO only on High; its targets shrink to 1x1 while off
+  bloomPass.strength = B.strength; bloomPass.radius = B.radius; bloomScale = B.scale;
+  resize();                           // re-sizes renderer, composer and every pass
+  perfReset(3);
+});
+// Draws one frame through the post chain.
+function renderFrame() {
+  const now = performance.now();
+  if (renderDebug && PERF.slowMs > 0) { const end = now + PERF.slowMs; while (performance.now() < end); } // ?debug only: fake a slow device
+  perfSample(now);
+  composer.render();
+}
+if (renderDebug) window.SKR = { composer, gtaoPass, bloomPass, smaaPass, outputPass, PERF, BLOOM, sun, hemi };
+
+// Shared material helpers (physically based).
+const lam = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, metalness: 0, ...o });
+function canvasTex(w, h, draw, repeat, color = true) {
   const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
   draw(cv.getContext('2d'), w, h);
   const t = new THREE.CanvasTexture(cv);
+  if (color) t.colorSpace = THREE.SRGBColorSpace;
   if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, repeat); }
-  t.anisotropy = 4; return t;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4; return t;
 }
 
-// grass + tarmac
-const grass = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), lam('#8DBF6A'));
-grass.rotation.x = -Math.PI / 2; grass.position.y = -0.05; grass.receiveShadow = true; scene.add(grass);
-const tarmacTex = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#3E4C66'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 900; i++) { g.fillStyle = Math.random() < .5 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.08)'; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
-  g.strokeStyle = 'rgba(255,244,220,.07)'; g.lineWidth = 2; g.strokeRect(0, 0, w, h);
-}, 16);
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), new THREE.MeshLambertMaterial({ map: tarmacTex }));
-floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
-function paintRing(r1_, r2_, op) {
-  const m = new THREE.Mesh(new THREE.RingGeometry(r1_, r2_, 64), new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: op }));
-  m.rotation.x = -Math.PI / 2; m.position.y = 0.03; scene.add(m);
+/* =========================================================================
+   ARENA: sky, fog, ground, markings, perimeter, distant scenery.
+   ========================================================================= */
+// Everything here is static dressing: it never touches collision (walls are maths at +-HALF).
+// The dressing uses its own seeded random, so every client and every reload sees the same arena.
+const arenaRand = (() => { let s = 0x5C4A7; return () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+const ar = (a, b) => a + arenaRand() * (b - a);
+function vnoise(x, y, seed = 0) { // smooth value noise, 0..1
+  const xi = Math.floor(x), yi = Math.floor(y), u = x - xi, v = y - yi, su = u * u * (3 - 2 * u), sv = v * v * (3 - 2 * v);
+  const h = (i, j) => { let n = Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(seed, 982451653) | 0; n = Math.imul(n ^ (n >>> 13), 1274126177); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; };
+  return (h(xi, yi) * (1 - su) + h(xi + 1, yi) * su) * (1 - sv) + (h(xi, yi + 1) * (1 - su) + h(xi + 1, yi + 1) * su) * sv;
 }
-paintRing(8.5, 9.6, .55); paintRing(29, 29.8, .25);
-for (const [x, z] of SPAWNS) {
-  const pad = new THREE.Mesh(new THREE.CircleGeometry(3, 24), new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: .18 }));
-  pad.rotation.x = -Math.PI / 2; pad.position.set(x, 0.03, z); scene.add(pad);
+const fbm = (x, y, seed = 0) => vnoise(x, y, seed) * 0.55 + vnoise(x * 2.03, y * 2.03, seed + 7) * 0.3 + vnoise(x * 4.1, y * 4.1, seed + 13) * 0.15;
+const rot90 = (x, z, k) => { for (let i = 0; i < (k & 3); i++) [x, z] = [-z, x]; return [x, z]; }; // same as rotateY(-k * 90deg)
+function tintGeo(geo, color) { // flat vertex colour (linear) on a geometry
+  const n = geo.attributes.position.count, a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) color.toArray(a, i * 3);
+  geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); return geo;
 }
 
-// perimeter barrier: striped kerbs
-(function buildWalls() {
-  const seg = 4, red = lam('#E8553E'), white = lam('#F5F1E6');
-  const geoX = new THREE.BoxGeometry(seg, 1.6, 1.2), geoZ = new THREE.BoxGeometry(1.2, 1.6, seg);
-  let i = 0;
-  for (let p = -HALF + seg / 2; p < HALF; p += seg, i++) {
-    for (const s of [-1, 1]) {
-      const a = new THREE.Mesh(geoX, i % 2 ? red : white); a.position.set(p, 0.8, s * HALF); a.castShadow = a.receiveShadow = true; scene.add(a);
-      const b = new THREE.Mesh(geoZ, i % 2 ? white : red); b.position.set(s * HALF, 0.8, p); b.castShadow = b.receiveShadow = true; scene.add(b);
+// ---- sky: equirectangular gradient (three turns it into a cube once), horizon colour = fog colour
+const SKY_HORIZON = '#D3E9F1';
+const skyTex = canvasTex(2048, 1024, (g, w, h) => {
+  const hz = h / 2, gr = g.createLinearGradient(0, 0, 0, hz);
+  gr.addColorStop(0, '#3B86D0'); gr.addColorStop(0.45, '#67ADE3'); gr.addColorStop(0.78, '#9DCDEC'); gr.addColorStop(0.94, '#C3E2F0'); gr.addColorStop(1, SKY_HORIZON);
+  g.fillStyle = gr; g.fillRect(0, 0, w, hz + 1);
+  g.fillStyle = SKY_HORIZON; g.fillRect(0, hz, w, h - hz);
+  const puff = (x, y, rx, ry, a) => {
+    for (const ox of [-w, 0, w]) {
+      if (x + ox + rx < 0 || x + ox - rx > w) continue;
+      g.save(); g.translate(x + ox, y); g.scale(1, ry / rx);
+      const rg = g.createRadialGradient(0, 0, 0, 0, 0, rx);
+      rg.addColorStop(0, `rgba(255,255,255,${a})`); rg.addColorStop(0.5, `rgba(255,255,255,${a * 0.65})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = rg; g.beginPath(); g.arc(0, 0, rx, 0, TAU); g.fill(); g.restore();
     }
+  };
+  for (let c = 0; c < 24; c++) { // soft fair-weather clouds, 4..32 degrees above the horizon
+    const el = ar(4, 32), cy = hz * (1 - el / 90), cx = ar(0, w), size = ar(45, 120) * (1.1 - el / 45), n = 4 + (arenaRand() * 6 | 0);
+    for (let k = 0; k < n; k++) puff(cx + ar(-1.7, 1.7) * size, cy + ar(-0.22, 0.12) * size, size * ar(0.45, 0.9), size * ar(0.22, 0.36), ar(0.28, 0.55));
+  }
+  const y0 = hz * 0.4 | 0, img = g.getImageData(0, y0, w, hz + 4 - y0), d = img.data; // dither the visible band (< ~55 deg) so it does not band
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - 0.5) * 3; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  g.putImageData(img, 0, y0);
+});
+skyTex.mapping = THREE.EquirectangularReflectionMapping;
+scene.background = skyTex;
+scene.fog = new THREE.Fog(SKY_HORIZON, 170, 640); // light: the far side of the arena (~180) stays clear
+
+// ---- grass outside the walls: tiled blades + mowing stripes, large-scale colour variation in vertex colours
+const grassTex = canvasTex(512, 512, (g, w, h) => {
+  g.fillStyle = '#77AE57'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(255,255,230,0.07)'; g.fillRect(0, 0, w / 2, h);
+  g.fillStyle = 'rgba(38,78,22,0.16)'; for (let i = 0; i < 6000; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.3, ar(2, 6));
+  g.fillStyle = 'rgba(225,245,170,0.13)'; for (let i = 0; i < 4500; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.2, ar(2, 5));
+}, 120);
+const grassGeo = new THREE.PlaneGeometry(1800, 1800, 90, 90); grassGeo.rotateX(-Math.PI / 2);
+{
+  const p = grassGeo.attributes.position, col = new Float32Array(p.count * 3), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), d = clamp((fbm(x / 80, z / 80, 3) - 0.2) * 1.4 * 0.7 + vnoise(x / 24, z / 24, 9) * 0.3, 0, 1);
+    c.setRGB(0.74 + d * 0.42, 0.9 + d * 0.16, 0.84 - d * 0.06).toArray(col, i * 3); // lush green (d = 0) to dry, sun-bleached (d = 1)
+  }
+  grassGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const idx = grassGeo.index.array, keep = []; // cut out the cells hidden under the tarmac (saves shading them twice)
+  for (let i = 0; i < idx.length; i += 3) {
+    let under = true;
+    for (let k = 0; k < 3; k++) if (Math.abs(p.getX(idx[i + k])) > HALF - 3.9 || Math.abs(p.getZ(idx[i + k])) > HALF - 3.9) under = false;
+    if (!under) keep.push(idx[i], idx[i + 1], idx[i + 2]);
+  }
+  grassGeo.setIndex(keep);
+}
+const grass = new THREE.Mesh(grassGeo, new THREE.MeshStandardMaterial({ map: grassTex, vertexColors: true, roughness: 0.95, metalness: 0 }));
+grass.position.y = -0.05; scene.add(grass); // no shadow lookups: barrier and board shadows land on the apron
+// concrete apron under the barrier, between tarmac and grass
+const apronTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#B4B2AA'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(60,60,60,.10)'; for (let i = 0; i < 2500; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5);
+  g.fillStyle = 'rgba(255,255,255,.10)'; for (let i = 0; i < 1500; i++) g.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5);
+  g.strokeStyle = 'rgba(70,70,70,.35)'; g.lineWidth = 3; g.strokeRect(0, 0, w, h);
+}, 1);
+const apronGeo = mergeGeometries([0, 1, 2, 3].map(k => { // four strips around the tarmac, 8 units wide
+  const g = new THREE.PlaneGeometry(HALF * 2 + 16, 8.6); g.rotateX(-Math.PI / 2); g.translate(0, 0, HALF + 3.7);
+  g.rotateY(-k * Math.PI / 2); return g; // corners overlap with identical world-mapped texels
+}));
+{ const p = apronGeo.attributes.position, uv = apronGeo.attributes.uv; for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / 8, p.getZ(i) / 8); }
+const apron = new THREE.Mesh(apronGeo, new THREE.MeshStandardMaterial({ map: apronTex, roughness: 0.95, metalness: 0 }));
+apron.position.y = -0.025; apron.receiveShadow = true; scene.add(apron);
+
+// ---- tarmac: one unique 2048 colour map for the whole floor (16 texels per unit: wear, patches, cracks, stains)
+// plus a tiled grain map used as bump (R) and roughness (G) for the fine aggregate.
+const tarmacTex = canvasTex(2048, 2048, (g, w, h) => {
+  const P = w / (HALF * 2), C = w / 2; // texels per world unit, canvas centre (canvas x = world x, canvas y = world z)
+  g.fillStyle = '#4A505D'; g.fillRect(0, 0, w, h);
+  const blob = (x, y, r, rgba) => { const rg = g.createRadialGradient(x, y, 0, x, y, r); rg.addColorStop(0, rgba); rg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = rg; g.fillRect(x - r, y - r, 2 * r, 2 * r); };
+  for (let i = 0; i < 240; i++) blob(ar(0, w), ar(0, h), ar(70, 280), arenaRand() < 0.55 ? 'rgba(18,22,30,.10)' : 'rgba(205,210,220,.06)');
+  // rubbered-in wear where karts circulate (around the centre and the outer lane)
+  g.lineCap = 'round';
+  const band = (r, lw, a) => {
+    g.lineWidth = lw; g.strokeStyle = `rgba(14,16,22,${a})`; g.beginPath();
+    g.ellipse(C + ar(-3, 3) * P, C + ar(-3, 3) * P, r * P * ar(0.93, 1.07), r * P * ar(0.93, 1.07), ar(0, TAU), 0, TAU); g.stroke();
+  };
+  for (let i = 0; i < 24; i++) band(ar(16, 30), ar(24, 70), 0.014);
+  for (let i = 0; i < 24; i++) band(ar(40, 54), ar(24, 70), 0.012);
+  for (let i = 0; i < 110; i++) {
+    const r = (arenaRand() < 0.5 ? ar(17, 30) : ar(40, 55)) * P, a0 = ar(0, TAU);
+    g.lineWidth = ar(3, 7); g.strokeStyle = `rgba(10,12,16,${ar(0.025, 0.06)})`; g.beginPath(); g.arc(C, C, r, a0, a0 + ar(0.15, 0.9)); g.stroke();
+  }
+  // dirt collects along the barrier
+  for (let k = 0; k < 4; k++) {
+    g.save(); g.translate(C, C); g.rotate(k * Math.PI / 2);
+    const lg = g.createLinearGradient(0, C - 4 * P, 0, C); lg.addColorStop(0, 'rgba(25,24,22,0)'); lg.addColorStop(1, 'rgba(25,24,22,.32)');
+    g.fillStyle = lg; g.fillRect(-C, C - 4 * P, w, 4 * P); g.restore();
+  }
+  // repair patches (fresh, darker asphalt with a sealed joint)
+  for (let i = 0; i < 10; i++) {
+    const pw = ar(3, 8) * P, ph = ar(2, 5) * P, dark = arenaRand() < 0.7;
+    g.save(); g.translate(ar(0.08, 0.92) * w, ar(0.08, 0.92) * h); g.rotate(arenaRand() < 0.5 ? 0 : ar(-0.4, 0.4));
+    g.fillStyle = dark ? 'rgba(28,32,40,.16)' : 'rgba(160,165,175,.07)'; g.fillRect(-pw / 2, -ph / 2, pw, ph);
+    g.strokeStyle = 'rgba(16,18,24,.3)'; g.lineWidth = 2; g.strokeRect(-pw / 2, -ph / 2, pw, ph); g.restore();
+  }
+  // oil and rubber stains
+  for (let i = 0; i < 22; i++) blob(ar(0.05, 0.95) * w, ar(0.05, 0.95) * h, ar(0.8, 2.6) * P, `rgba(8,10,14,${ar(0.18, 0.34)})`);
+  // cracks (branching random walks)
+  g.lineJoin = 'round';
+  const crack = (x, y, a, n, lw) => {
+    const pts = [[x, y]];
+    for (let i = 0; i < n; i++) {
+      a += ar(-0.55, 0.55); x += Math.cos(a) * ar(4, 11); y += Math.sin(a) * ar(4, 11); pts.push([x, y]);
+      if (lw > 1 && arenaRand() < 0.07) crack(x, y, a + (arenaRand() < 0.5 ? -1 : 1) * ar(0.6, 1.3), n / 3 | 0, lw * 0.6);
+    }
+    g.lineWidth = lw; g.strokeStyle = 'rgba(10,12,16,.42)'; g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
+    for (const [px, py] of pts) g.lineTo(px, py); g.stroke();
+  };
+  for (let i = 0; i < 20; i++) crack(ar(0, w), ar(0, h), ar(0, TAU), 8 + (arenaRand() * 22 | 0), ar(1, 1.8));
+  // aggregate speckle at two scales
+  g.fillStyle = 'rgba(230,234,242,.10)'; for (let i = 0; i < 42000; i++) g.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+  g.fillStyle = 'rgba(4,6,10,.13)'; for (let i = 0; i < 42000; i++) g.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+  g.fillStyle = 'rgba(220,224,232,.07)'; for (let i = 0; i < 9000; i++) { const s = ar(2, 4); g.fillRect(Math.random() * w, Math.random() * h, s, s); }
+  g.fillStyle = 'rgba(6,8,12,.08)'; for (let i = 0; i < 9000; i++) { const s = ar(2, 4); g.fillRect(Math.random() * w, Math.random() * h, s, s); }
+});
+const grainTex = canvasTex(512, 512, (g, w, h) => { // R = height (stones), G = roughness; tiles every 8 units
+  const img = g.createImageData(w, h), d = img.data, hgt = new Float32Array(w * h);
+  for (let i = 0; i < hgt.length; i++) hgt[i] = Math.random() * 0.3;
+  for (let s = 0; s < 9000; s++) {
+    const cx = Math.random() * w | 0, cy = Math.random() * h | 0, r = 0.8 + Math.random() * 2.2, v = 0.5 + Math.random() * 0.5, R = Math.ceil(r);
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      const q = (dx * dx + dy * dy) / (r * r); if (q > 1) continue;
+      const i = ((cy + dy + h) % h) * w + ((cx + dx + w) % w); hgt[i] = Math.max(hgt[i], v * (1 - q * 0.6));
+    }
+  }
+  for (let i = 0; i < hgt.length; i++) { d[i * 4] = hgt[i] * 255; d[i * 4 + 1] = (0.97 - hgt[i] * 0.22) * 255; d[i * 4 + 2] = 0; d[i * 4 + 3] = 255; }
+  g.putImageData(img, 0, 0);
+}, 16, false);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2),
+  new THREE.MeshStandardMaterial({ map: tarmacTex, roughnessMap: grainTex, bumpMap: grainTex, bumpScale: 1.4, roughness: 1, metalness: 0 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+// ---- painted markings: flat geometry in one merged mesh at y = 0.02 (skid marks sit above at 0.045)
+(function buildMarkings() {
+  const parts = [], W = new THREE.Color('#E4DFD1'), Y = new THREE.Color('#EDB136');
+  const push = (geo, col) => parts.push(tintGeo(geo.index ? geo.toNonIndexed() : geo, col));
+  const poly = (pts, col) => { // world-space XZ polygon
+    const geo = new THREE.ShapeGeometry(new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, -z)))); geo.rotateX(-Math.PI / 2); push(geo, col);
+  };
+  const seg = (a, b, lw, col) => {
+    const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz), nx = -dz / l * lw / 2, nz = dx / l * lw / 2;
+    poly([[a[0] + nx, a[1] + nz], [b[0] + nx, b[1] + nz], [b[0] - nx, b[1] - nz], [a[0] - nx, a[1] - nz]], col);
+  };
+  const ring = (r0, r1, col) => { const geo = new THREE.RingGeometry(r0, r1, 128); geo.rotateX(-Math.PI / 2); push(geo, col); };
+  const arc = (r0, r1, a0, a1, col) => {
+    const n = Math.max(2, Math.ceil(Math.abs(a1 - a0) * r1 / 0.8)), pts = [];
+    for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; pts.push([Math.cos(a) * r1, Math.sin(a) * r1]); }
+    for (let i = n; i >= 0; i--) { const a = a0 + (a1 - a0) * i / n; pts.push([Math.cos(a) * r0, Math.sin(a) * r0]); }
+    poly(pts, col);
+  };
+  const dashed = (r0, r1, n, duty, col) => { for (let i = 0; i < n; i++) { const a = i / n * TAU; arc(r0, r1, a, a + TAU / n * duty, col); } };
+  // clip a polygon to a convex polygon (Sutherland-Hodgman); both counter-clockwise or both clockwise
+  const clip = (pts, conv) => {
+    const side = (p, a, b) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    const s0 = Math.sign(side(conv[2], conv[0], conv[1]));
+    for (let i = 0; i < conv.length && pts.length; i++) {
+      const a = conv[i], b = conv[(i + 1) % conv.length], out = [];
+      for (let j = 0; j < pts.length; j++) {
+        const p = pts[j], q = pts[(j + 1) % pts.length], sp = side(p, a, b) * s0, sq = side(q, a, b) * s0;
+        if (sp >= 0) out.push(p);
+        if (sp * sq < 0) { const t = sp / (sp - sq); out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]); }
+      }
+      pts = out;
+    }
+    return pts;
+  };
+  // diagonal hatching inside a convex area, then its outline
+  const hatch = (conv, dir, col, step = 1.7, lw = 0.55) => { // stripes run across `dir`
+    const l = Math.hypot(dir[0], dir[1]), nx = dir[0] / l, nz = dir[1] / l, px = -nz * 200, pz = nx * 200;
+    let lo = 1e9, hi = -1e9; for (const [x, z] of conv) { const t = x * nx + z * nz; lo = Math.min(lo, t); hi = Math.max(hi, t); }
+    for (let c = lo + 0.4; c < hi; c += step) {
+      const a = [nx * c, nz * c], b = [nx * (c + lw), nz * (c + lw)];
+      const p = clip([[a[0] - px, a[1] - pz], [a[0] + px, a[1] + pz], [b[0] + px, b[1] + pz], [b[0] - px, b[1] - pz]], conv);
+      if (p.length >= 3) poly(p, col);
+    }
+    for (let i = 0; i < conv.length; i++) seg(conv[i], conv[(i + 1) % conv.length], 0.26, col);
+  };
+
+  // centre circle and the outer lane ring
+  ring(8.6, 9.3, W); dashed(10.0, 10.25, 36, 0.5, Y);
+  dashed(29.2, 29.8, 40, 0.55, W);
+  // edge line just inside the barrier
+  const E = HALF - 1.8;
+  for (let k = 0; k < 4; k++) seg(rot90(-E - 0.15, E, k), rot90(E + 0.15, E, k), 0.3, W);
+  for (let k = 0; k < 4; k++) {
+    // hatched no-stopping zone at the middle of each wall, and a hatched corner triangle
+    hatch([[-9, 56.6], [9, 56.6], [9, 61.6], [-9, 61.6]].map(([x, z]) => rot90(x, z, k)), rot90(1, 1, k), Y);
+    hatch([[E - 0.2, E - 6], [E - 0.2, E - 0.2], [E - 6, E - 0.2]].map(([x, z]) => rot90(x, z, k)), rot90(1, -1, k), Y, 1.5, 0.5);
+    // circulation arrows on the outer lane (anticlockwise seen from above)
+    const ac = (30 + 90 * k) * Math.PI / 180, a0 = ac - 0.16, a1 = ac + 0.1;
+    arc(43.7, 44.3, a0, a1, W);
+    const P = (a, r) => [Math.cos(a) * r, Math.sin(a) * r];
+    poly([P(a1, 42.6), P(a1 + 0.075, 44), P(a1, 45.4)], W);
+  }
+  // spawn bays: painted grid boxes facing the centre, with chevrons in front
+  for (const [x, z] of SPAWNS) {
+    const yaw = Math.atan2(-x, -z), fx = Math.sin(yaw), fz = Math.cos(yaw), rx = fz, rz = -fx;
+    const L = (a, b) => [x + rx * a + fx * b, z + rz * a + fz * b];
+    seg(L(-2.3, -3.54), L(-2.3, 2.6), 0.28, W); seg(L(2.3, -3.54), L(2.3, 2.6), 0.28, W);
+    seg(L(-2.44, -3.4), L(2.44, -3.4), 0.28, W);
+    for (const b0 of [3.7, 5.0]) poly([[-1.1, 0], [0, 0.85], [1.1, 0], [1.1, -0.42], [0, 0.43], [-1.1, -0.42]].map(([a, b]) => L(a, b + b0)), Y);
+  }
+  const geo = mergeGeometries(parts);
+  const p = geo.attributes.position, uv = geo.attributes.uv; // planar UVs so the wear texture tiles evenly
+  for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / 6, p.getZ(i) / 6);
+  const wear = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 1400; i++) { g.fillStyle = `rgba(70,74,84,${ar(0.1, 0.4)})`; const s = ar(1, 3.5); g.fillRect(Math.random() * w, Math.random() * h, s, s); }
+    g.lineCap = 'round';
+    for (let i = 0; i < 26; i++) { g.strokeStyle = `rgba(60,64,72,${ar(0.08, 0.2)})`; g.lineWidth = ar(2, 6); g.beginPath(); const x = ar(0, w), y = ar(0, h); g.moveTo(x, y); g.lineTo(x + ar(-60, 60), y + ar(-20, 20)); g.stroke(); }
+  }, 1);
+  const paint = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: wear, vertexColors: true, roughness: 0.7, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+  paint.position.y = 0.02; paint.receiveShadow = true; scene.add(paint);
+})();
+
+// ---- perimeter: rounded red/white barrier blocks on the wall line, tyre stacks in the corners, ad boards behind
+(function buildWalls() {
+  const n = 31, span = HALF - 1.1, len = span * 2 / n, red = new THREE.Color('#DE4436'), white = new THREE.Color('#F0EDE6'), tyre = new THREE.Color('#2A2D33');
+  let block = new RoundedBoxGeometry(len - 0.12, 1.6, 1.2, 2, 0.24); const parts = [];
+  if (block.index) block = block.toNonIndexed();
+  for (let k = 0; k < 4; k++) for (let i = 0; i < n; i++) {
+    const [x, z] = rot90(-span + len * (i + 0.5), HALF, k), g = block.clone();
+    g.rotateY(-k * Math.PI / 2); g.translate(x, 0.8, z); parts.push(tintGeo(g, (i + k) % 2 ? red : white));
+  }
+  const tor = new THREE.TorusGeometry(0.86, 0.4, 8, 20).toNonIndexed(); tor.rotateX(Math.PI / 2); // RoundedBoxGeometry is non-indexed too
+  for (let k = 0; k < 4; k++) {
+    const [x, z] = rot90(HALF + 0.5, HALF + 0.5, k);
+    for (let j = 0; j < 3; j++) { const g = tor.clone(); g.translate(x, 0.4 + j * 0.76, z); parts.push(tintGeo(g, j === 2 ? white : tyre)); }
+  }
+  const walls = new THREE.Mesh(mergeGeometries(parts), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 }));
+  walls.castShadow = walls.receiveShadow = true; scene.add(walls);
+
+  // advertising boards: one texture atlas (5 boards + a dark strip for edges and posts), one mesh
+  const RH = 200, AT = 1024;
+  const ads = canvasTex(AT, AT, (g, w) => {
+    const row = (r, bg, fg, text, deco) => {
+      const y = r * RH; g.fillStyle = bg; g.fillRect(0, y, w, RH);
+      if (deco) deco(y);
+      g.font = '900 118px "Arial Black", "Arial Bold", Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      const tw = g.measureText(text).width, sx = Math.min(1, (w - 150) / tw);
+      g.save(); g.translate(w / 2, y + RH / 2 + 6); g.scale(sx, 1); g.fillStyle = fg; g.fillText(text, 0, 0); g.restore();
+      g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 10; g.strokeRect(5, y + 5, w - 10, RH - 10);
+    };
+    const checks = y => { for (const x0 of [0, w - 60]) for (let i = 0; i < 3; i++) for (let j = 0; j < 7; j++) if ((i + j) % 2) { g.fillStyle = '#F5F1E6'; g.fillRect(x0 + i * 20, y + j * 29, 20, 29); } };
+    const stripes = col => y => { g.fillStyle = col; for (let i = -2; i < 14; i++) { g.beginPath(); g.moveTo(i * 80, y + RH); g.lineTo(i * 80 + 40, y + RH); g.lineTo(i * 80 + 100, y); g.lineTo(i * 80 + 60, y); g.fill(); } };
+    row(0, '#23304A', '#F2B134', 'SCRAP KARTS', checks);
+    row(1, '#E8553E', '#FFF4DC', 'BONK!', stripes('rgba(255,255,255,.12)'));
+    row(2, '#F2B134', '#23304A', 'GRAB A BOX', null);
+    row(3, '#F5F1E6', '#E8553E', 'TURBO SCRAP', stripes('rgba(232,85,62,.10)'));
+    row(4, '#1F8A8A', '#F5F1E6', 'FULL THROTTLE', checks);
+    g.fillStyle = '#2B2F3A'; g.fillRect(0, 5 * RH, w, AT - 5 * RH);
+  });
+  const vOf = y => 1 - y / AT, dark = vOf(5 * RH + 12);
+  const panel = new THREE.BoxGeometry(7.3, 1.45, 0.16), post = new THREE.BoxGeometry(0.18, 2.5, 0.18), boards = [];
+  const D = HALF + 2.3, slots = [];
+  for (let u = -56; u <= 56; u += 8) slots.push(u);
+  let r = 0;
+  for (let k = 0; k < 4; k++) for (const u of slots) {
+    const row = r++ % 5, g = panel.clone(), uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) {
+      if (i >= 16) uv.setY(i, vOf((row + 1) * RH - 6) + uv.getY(i) * (vOf(row * RH + 6) - vOf((row + 1) * RH - 6))); // front and back faces show the ad
+      else uv.setXY(i, 0.5, dark);
+    }
+    const [x, z] = rot90(u, D, k);
+    g.translate(0, 1.72, 0); g.rotateY(-k * Math.PI / 2); g.translate(x, 0, z); boards.push(g);
+    for (const s of [-3.2, 3.2]) {
+      const pg = post.clone(), puv = pg.attributes.uv; for (let i = 0; i < puv.count; i++) puv.setXY(i, 0.5, dark);
+      const [px, pz] = rot90(u + s, D + 0.17, k); pg.translate(px, 1.25, pz); boards.push(pg);
+    }
+  }
+  const adMesh = new THREE.Mesh(mergeGeometries(boards), new THREE.MeshStandardMaterial({ map: ads, roughness: 0.6, metalness: 0 }));
+  adMesh.castShadow = true; adMesh.receiveShadow = true; scene.add(adMesh);
+})();
+
+// ---- distant scenery: tree line, hills, mountains and a far city (procedural, always present)
+const sceneryCore = new THREE.Group(), sceneryDetail = new THREE.Group(); // detail is hidden on Low quality
+scene.add(sceneryCore, sceneryDetail);
+(function buildFarScenery() {
+  const pos = [], col = [], c = new THREE.Color();
+  const addGeo = (geo, color) => { const g = geo.index ? geo.toNonIndexed() : geo, p = g.attributes.position.array; for (let i = 0; i < p.length; i += 3) { pos.push(p[i], p[i + 1], p[i + 2]); col.push(color.r, color.g, color.b); } };
+  const tri = (a, b, d, color, want) => { // keep the face pointing towards `want`
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = d[0] - a[0], vy = d[1] - a[1], vz = d[2] - a[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    if (nx * want[0] + ny * want[1] + nz * want[2] < 0) [b, d] = [d, b];
+    pos.push(...a, ...b, ...d); for (let i = 0; i < 3; i++) col.push(color.r, color.g, color.b);
+  };
+  const ridge = (rIn, rCrest, rOut, hMin, hMax, freq, seed, colA, colB, segs) => {
+    const H = a => hMin + (hMax - hMin) * clamp((fbm(Math.cos(a) * freq + 40, Math.sin(a) * freq + 40, seed) - 0.25) / 0.5, 0, 1);
+    const ca = new THREE.Color(colA), cb = new THREE.Color(colB);
+    for (let i = 0; i < segs; i++) {
+      const a0 = i / segs * TAU, a1 = (i + 1) / segs * TAU, h0 = H(a0), h1 = H(a1);
+      const P = (a, r, y) => [Math.cos(a) * r, y, Math.sin(a) * r];
+      const rc0 = rCrest + (vnoise(i * 0.7, 3, seed) - 0.5) * 30, rc1 = rCrest + (vnoise((i + 1) * 0.7, 3, seed) - 0.5) * 30;
+      const in0 = P(a0, rIn, -3), in1 = P(a1, rIn, -3), c0 = P(a0, rc0, h0), c1 = P(a1, rc1, h1), o0 = P(a0, rOut, h0 * 0.35), o1 = P(a1, rOut, h1 * 0.35);
+      const am = (a0 + a1) / 2, inward = [-Math.cos(am), 0.6, -Math.sin(am)], outward = [Math.cos(am), 0.6, Math.sin(am)];
+      c.copy(ca).lerp(cb, arenaRand() * 0.6); tri(in0, c0, c1, c, inward);
+      c.copy(ca).lerp(cb, arenaRand() * 0.6); tri(in0, c1, in1, c, inward);
+      c.copy(cb); tri(c0, o0, o1, c, outward); tri(c0, o1, c1, c, outward);
+    }
+  };
+  // tree line (low-poly cones)
+  const cone = new THREE.ConeGeometry(1, 1, 7); cone.translate(0, 0.5, 0);
+  const greens = ['#3D7448', '#4A8550', '#356640', '#58905A'].map(s => new THREE.Color(s));
+  for (let i = 0; i < 300; i++) {
+    const a = ar(0, TAU), r = ar(205, 275), h = ar(14, 32), w = h * ar(0.26, 0.36), g = cone.clone();
+    g.scale(w, h, w); g.translate(Math.cos(a) * r, -1, Math.sin(a) * r);
+    addGeo(g, c.copy(greens[i % 4]).multiplyScalar(ar(0.85, 1.1)));
+  }
+  ridge(275, 305, 360, 8, 34, 3.2, 21, '#5E9A58', '#4F8450', 160);
+  ridge(420, 480, 560, 28, 95, 2.2, 5, '#7C93A8', '#6D8399', 140);
+  // far city skyline in one direction
+  const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
+  for (let i = 0; i < 46; i++) {
+    const a = ar(3.55, 4.25), r = ar(330, 390), g = box.clone();
+    g.scale(ar(9, 22), ar(16, 66) * (1 - Math.abs(a - 3.9) * 0.9), ar(9, 22)); g.rotateY(-a); g.translate(Math.cos(a) * r, -1, Math.sin(a) * r);
+    addGeo(g, c.set('#93A2B4').multiplyScalar(ar(0.85, 1.08)));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const far = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1, metalness: 0 }));
+  far.matrixAutoUpdate = false; sceneryCore.add(far);
+})();
+
+// ---- venue around the arena: Kenney Racing Kit (CC0, assets/racing-kit), merged per material.
+// Tall props stay >= 84 units from the centre so the chase camera (at most ~81 out) never sits behind them.
+(function buildVenue() {
+  const plan = []; // [file, x, z, yaw, scale, detail]
+  const at = (file, u, v, k, yaw, s, detail = false) => { const [x, z] = rot90(u, v, k); plan.push([file, x, z, yaw - k * Math.PI / 2, s, detail]); };
+  const S = 13;
+  for (const u of [-26, -13, 0, 13, 26]) at('grandStandCovered', u, 91, 0, Math.PI, S);
+  for (const u of [-26, -13, 0, 13, 26]) at(u % 26 ? 'pitsGarageClosed' : 'pitsGarage', u, 90, 1, Math.PI, S);
+  at('pitsOffice', -39, 90, 1, Math.PI, S); at('pitsOffice', 39, 90, 1, Math.PI, S);
+  for (const u of [-26, -13, 0, 13, 26]) at('grandStand', u, 91, 2, Math.PI, S);
+  for (const u of [-26, 26]) at('tentLong', u, 90, 3, 0, S);
+  at('tentClosedLong', 0, 90, 3, 0, S);
+  for (let k = 0; k < 4; k++) {
+    at('lightPostLarge', 84, 84, k, Math.PI / 4, 30);
+    at(k % 2 ? 'bannerTowerGreen' : 'bannerTowerRed', -40, 86, k, Math.PI / 2, 12, true);
+    at(k % 2 ? 'bannerTowerRed' : 'bannerTowerGreen', 40, 86, k, Math.PI / 2, 12, true);
+    for (const u of [-48, -34, 34, 48]) at(['flagRed', 'flagGreen', 'flagCheckers'][(u + k * 7 + 100) % 3], u, 86, k, 0, 9, true);
+  }
+  at('billboard', -58, 90, 3, Math.PI, 14, true); at('billboard', 58, 90, 3, Math.PI, 14, true);
+  // trees in a ring behind the venue
+  for (let i = 0; i < 110; i++) {
+    let x, z, tries = 0;
+    do { const a = ar(0, TAU), r = ar(108, 190); x = Math.cos(a) * r; z = Math.sin(a) * r; tries++; }
+    while (tries < 20 && (Math.max(Math.abs(x), Math.abs(z)) < 104 || Math.hypot(Math.abs(x) - 84, Math.abs(z) - 84) < 14));
+    plan.push([arenaRand() < 0.6 ? 'treeLarge' : 'treeSmall', x, z, ar(0, TAU), ar(9, 15), true]);
+  }
+  const PAL = { grey: '#E2E0DA', red: '#DE4436', road: '#4A4E57', grass: '#4E9A6C', bark: '#B78A5C', glass: '#5A7590', _defaultMat: '#D6D6DC', pylon: '#F2B134' };
+  const mats = {};
+  const logo = () => { // replaces the kit's sponsor banner (256x128 image, glTF UVs) with the game's own
+    const t = canvasTex(512, 256, (g, w, h) => {
+      g.fillStyle = '#23304A'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#F2B134'; g.beginPath(); g.arc(92, h / 2, 50, 0, TAU); g.fill();
+      g.fillStyle = '#23304A'; g.beginPath(); g.arc(92, h / 2, 24, 0, TAU); g.fill();
+      g.fillStyle = '#E8553E'; g.beginPath(); g.arc(92, h / 2, 12, 0, TAU); g.fill();
+      g.fillStyle = '#F5F1E6'; g.font = '900 54px "Arial Black", "Arial Bold", Arial, sans-serif'; g.textBaseline = 'middle';
+      g.fillText('SCRAP', 166, h / 2 - 28); g.fillStyle = '#F2B134'; g.fillText('KARTS', 166, h / 2 + 32);
+    });
+    t.flipY = false; t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+  };
+  const matFor = src => {
+    const key = src.name || 'x';
+    if (!mats[key]) mats[key] = key === 'tankco' ? new THREE.MeshStandardMaterial({ map: logo(), roughness: 0.7, metalness: 0 })
+      : src.map ? new THREE.MeshStandardMaterial({ map: src.map, roughness: 0.8, metalness: 0 })
+      : lam(PAL[key] || '#' + src.color.getHexString(), { roughness: 0.85 });
+    return mats[key];
+  };
+  const clean = g => { // position/normal/uv only, non-indexed, so everything merges
+    const n = g.index ? g.toNonIndexed() : g, out = new THREE.BufferGeometry();
+    out.setAttribute('position', n.attributes.position);
+    if (n.attributes.normal) out.setAttribute('normal', n.attributes.normal);
+    out.setAttribute('uv', n.attributes.uv || new THREE.BufferAttribute(new Float32Array(n.attributes.position.count * 2), 2));
+    if (!n.attributes.normal) out.computeVertexNormals();
+    return out;
+  };
+  const loader = new GLTFLoader(), files = [...new Set(plan.map(p => p[0]))];
+  // no fetch from file:// (blocked by the browser): the procedural fallback below runs instead
+  (location.protocol === 'file:' ? Promise.resolve([]) : Promise.allSettled(files.map(f => loader.loadAsync('assets/racing-kit/' + f + '.glb')))).then(res => {
+    const models = {};
+    res.forEach((r, i) => {
+      if (r.status !== 'fulfilled') return;
+      const root = r.value.scene; root.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(root), cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2, parts = [];
+      root.traverse(o => { if (o.isMesh) { const g = clean(o.geometry.clone().applyMatrix4(o.matrixWorld)); g.translate(-cx, -bb.min.y, -cz); parts.push({ g, mat: o.material }); } });
+      models[files[i]] = parts;
+    });
+    if (!Object.keys(models).length) { // kit unavailable: simple low-poly trees on the same spots, the rest is procedural anyway
+      const parts = [], cone = new THREE.ConeGeometry(0.42, 1.1, 7).toNonIndexed(), trunk = new THREE.CylinderGeometry(0.06, 0.08, 0.45, 6).toNonIndexed();
+      cone.translate(0, 0.95, 0); trunk.translate(0, 0.22, 0);
+      const leaf = new THREE.Color('#4E9A6C'), bark = new THREE.Color('#B78A5C');
+      for (const [file, x, z, , s] of plan) {
+        if (!file.startsWith('tree')) continue;
+        const sc = file === 'treeLarge' ? s : s * 0.72;
+        for (const [g0, c0] of [[cone, leaf], [trunk, bark]]) { const g = g0.clone(); g.scale(sc, sc, sc); g.translate(x, 0, z); parts.push(tintGeo(g, c0)); }
+      }
+      const m = new THREE.Mesh(mergeGeometries(parts), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9, metalness: 0 }));
+      m.matrixAutoUpdate = false; sceneryDetail.add(m);
+    }
+    const buckets = new Map(), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), UPV = new THREE.Vector3(0, 1, 0);
+    for (const [file, x, z, yaw, s, detail] of plan) {
+      const parts = models[file]; if (!parts) continue;
+      m4.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(UPV, yaw), new THREE.Vector3(s, s, s));
+      for (const { g, mat } of parts) {
+        const key = (detail ? 'd|' : 'c|') + (mat.name || 'x');
+        if (!buckets.has(key)) buckets.set(key, { mat, list: [] });
+        buckets.get(key).list.push(g.clone().applyMatrix4(m4));
+      }
+    }
+    for (const [key, { mat, list }] of buckets) {
+      const mesh = new THREE.Mesh(mergeGeometries(list), matFor(mat));
+      mesh.matrixAutoUpdate = false; (key[0] === 'd' ? sceneryDetail : sceneryCore).add(mesh);
+    }
+  });
+})();
+onQuality(level => { // Low: no trees/flags/banner towers, no tarmac bump and roughness detail
+  const high = level === 'high', fm = floor.material;
+  sceneryDetail.visible = high;
+  if (!!fm.bumpMap !== high) { fm.bumpMap = high ? grainTex : null; fm.roughnessMap = high ? grainTex : null; fm.roughness = high ? 1 : 0.9; fm.needsUpdate = true; }
+});
+
+/* =========================================================================
+   MODELS: obstacles (containers, crates, tyre stacks) and karts.
+   Collision sizes come from OBST and KART_R; models must match them.
+   ========================================================================= */
+// obstacles
+// Every model is built from parts that carry a vertex colour, then merged, so each obstacle
+// kind (and each kart part) is one draw call. Geometry is built once and shared.
+const _mc = new THREE.Color(), _mm = new THREE.Matrix4(), _mq = new THREE.Quaternion(), _me = new THREE.Euler(), _mv = new THREE.Vector3(), _ms = new THREE.Vector3(1, 1, 1);
+// part(geo, colour, [x,y,z], [rx,ry,rz], shade?): a moved copy of geo tinted with colour (times its own
+// vertex colour if it has one). shade(x, y, z) -> brightness multiplier, evaluated after the move.
+function part(geo, color, pos, rot, shade) {
+  const g = geo.clone();
+  _me.set(rot ? rot[0] : 0, rot ? rot[1] : 0, rot ? rot[2] : 0); _mq.setFromEuler(_me);
+  g.applyMatrix4(_mm.compose(_mv.set(pos ? pos[0] : 0, pos ? pos[1] : 0, pos ? pos[2] : 0), _mq, _ms));
+  const P = g.attributes.position, n = P.count, old = g.attributes.color, col = new Float32Array(n * 3);
+  if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+  _mc.set(color);
+  for (let i = 0; i < n; i++) {
+    const k = shade ? shade(P.getX(i), P.getY(i), P.getZ(i)) : 1;
+    col[i * 3] = _mc.r * k * (old ? old.getX(i) : 1); col[i * 3 + 1] = _mc.g * k * (old ? old.getY(i) : 1); col[i * 3 + 2] = _mc.b * k * (old ? old.getZ(i) : 1);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
+}
+// Merge parts into one geometry (mixing indexed and non-indexed parts is allowed).
+function mergeParts(parts) {
+  const mixed = parts.some(p => p.index) && parts.some(p => !p.index);
+  const list = mixed ? parts.map(p => p.index ? p.toNonIndexed() : p) : parts;
+  for (const p of list) for (const k of Object.keys(p.attributes)) if (!['position', 'normal', 'uv', 'color'].includes(k)) p.deleteAttribute(k);
+  return mergeGeometries(list);
+}
+const shadeOf = (hex, k) => '#' + new THREE.Color(hex).multiplyScalar(k).getHexString();
+const rbox = (w, h, d, r = 0.05, seg = 1) => new RoundedBoxGeometry(w, h, d, seg, Math.min(r, w / 2.01, h / 2.01, d / 2.01));
+
+// Corrugated sheet in the XY plane facing +Z: x in [-len/2, len/2], y in [0, h], ridges at z = 0, valleys at z = -depth.
+// Slope normals are tilted only `soft` of the way toward the real slope (0 = flat shaded): the ridges are
+// under a pixel wide at play distances, so hard light/dark slope normals alias into moire bands.
+function corrugated(len, h, depth, pitch, soft = 0.1) {
+  const n = Math.max(1, Math.round(len / pitch)), p = len / n, prof = [];
+  for (let i = 0; i < n; i++) { const x = -len / 2 + i * p; prof.push([x, 0], [x + 0.3 * p, 0], [x + 0.42 * p, -depth], [x + 0.88 * p, -depth]); }
+  prof.push([len / 2, 0]);
+  const pos = [], nor = [], uv = [], idx = [];
+  for (let i = 0; i < prof.length - 1; i++) {
+    const [ax, az] = prof[i], [bx, bz] = prof[i + 1], sx = -(bz - az) * soft, sz = bx - ax, L = Math.hypot(sx, sz), nx = sx / L, nz = sz / L, b = pos.length / 3;
+    pos.push(ax, 0, az, bx, 0, bz, bx, h, bz, ax, h, az);
+    for (let k = 0; k < 4; k++) nor.push(nx, 0, nz);
+    const u0 = ax / len + 0.5, u1 = bx / len + 0.5; uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
+    idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+  return g;
+}
+
+// Surface of revolution around Y. prof: [[r, y, tread]], traced with the outside on the right-hand side
+// (normal = (dy, -dr)); repeat a point to get a hard edge. closed: also join the last point to the first.
+// tread: { blocks, gap (fraction of a block), depth, stagger }: tread points (tread = 1 lower half, 2 upper half)
+// sink by depth inside the grooves; stagger offsets the upper half's grooves by half a block.
+// shadeFn(j, grooved) -> brightness of profile point j.
+function latheGeo(prof, segs, closed, tread, shadeFn) {
+  const rings = [];
+  if (!tread) for (let i = 0; i <= segs; i++) rings.push({ a: i / segs * TAU, g: 0 });
+  else {
+    const step = TAU / tread.blocks, w = tread.gap * step, h = step / 2;
+    for (let b = 0; b < tread.blocks; b++) {
+      const a = b * step;
+      const iv = tread.stagger ? [[a, a + w, 1], [a + w, a + h, 0], [a + h, a + h + w, 2], [a + h + w, a + step, 0]] : [[a, a + w, 3], [a + w, a + step, 0]];
+      for (const [s, e, g] of iv) rings.push({ a: s, g }, { a: e, g });
+    }
+    rings.push({ a: TAU, g: tread.stagger ? 1 : 3 });
+  }
+  const pts = closed ? prof.concat([prof[0]]) : prof, np = pts.length;
+  const pn = pts.map((p, j) => { // smooth 2D normal from the neighbouring segments (zero-length segments ignored)
+    let nr = 0, ny = 0;
+    for (const [a, b] of [[pts[j - 1] || (closed ? pts[np - 2] : null), p], [p, pts[j + 1] || (closed ? pts[1] : null)]]) {
+      if (!a || !b) continue; const dr = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dr, dy); if (L < 1e-6) continue; nr += dy / L; ny += -dr / L;
+    }
+    const L = Math.hypot(nr, ny) || 1; return [nr / L, ny / L];
+  });
+  const pos = [], nor = [], uv = [], col = [], idx = [];
+  rings.forEach((R, i) => {
+    const c = Math.cos(R.a), s = Math.sin(R.a);
+    pts.forEach((p, j) => {
+      const grooved = !!(tread && p[2] && (p[2] === R.g || R.g === 3)), r = p[0] - (grooved ? tread.depth : 0), k = shadeFn ? shadeFn(j, grooved) : 1;
+      pos.push(r * c, p[1], r * s); nor.push(pn[j][0] * c, pn[j][1], pn[j][0] * s); uv.push(R.a / TAU, j / (np - 1)); col.push(k, k, k);
+    });
+    if (i < rings.length - 1) for (let j = 0; j < np - 1; j++) {
+      const a = i * np + j, b = a + np;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx);
+  return g;
+}
+// A tyre lying flat (axis Y) centred on the origin: rounded shoulders, sidewalls, bead, staggered tread blocks.
+function tyreGeo(R, ri, hw, blocks, stagger) {
+  const sh = Math.min(hw * 0.5, (R - ri) * 0.35), prof = [[ri, -hw * 0.78], [ri + (R - ri) * 0.2, -hw * 0.97], [R - sh, -hw]];
+  for (let k = 1; k < 4; k++) { const a = -Math.PI / 2 + k / 4 * Math.PI / 2; prof.push([R - sh + sh * Math.cos(a), -hw + sh + sh * Math.sin(a), k === 3 ? 1 : 0]); }
+  prof.push([R, -hw + sh, 1], [R, -hw * 0.5, 1], [R, -hw * 0.12, 1], [R, hw * 0.12, 2], [R, hw * 0.5, 2], [R, hw - sh, 2]);
+  for (let k = 1; k < 4; k++) { const a = k / 4 * Math.PI / 2; prof.push([R - sh + sh * Math.cos(a), hw - sh + sh * Math.sin(a), k === 1 ? 2 : 0]); }
+  prof.push([R - sh, hw], [ri + (R - ri) * 0.2, hw * 0.97], [ri, hw * 0.78], [ri, hw * 0.78], [ri, -hw * 0.78]);
+  return latheGeo(prof, 0, true, { blocks, gap: 0.32, depth: Math.min(0.14, R * 0.07), stagger },
+    (j, grooved) => grooved ? 0.45 : (prof[j] && prof[j][2] ? 0.95 : 1.12));
+}
+// A steel wheel rim (axis Y) that fills a tyre's bore: dished face with a hub, both sides.
+function rimGeo(rr, hh, segs) {
+  const top = [[0, hh * 0.32], [rr * 0.2, hh * 0.32], [rr * 0.26, hh * 0.12], [rr * 0.72, hh * 0.08], [rr * 0.86, hh * 0.55], [rr, hh * 0.72]];
+  const prof = top.map(([r, y]) => [r, -y]).concat(top.slice().reverse());
+  return latheGeo(prof, segs, false, null, j => j === 0 || j === prof.length - 1 || j === 1 || j === prof.length - 2 ? 0.7 : 1);
+}
+
+// Shipping container, long axis X (L), width Z (W), height H; exactly fills the box.
+function containerGeo(L, W, H, color) {
+  const frame = shadeOf(color, 0.72), cast = '#30333B', steel = '#AEB4BD', post = 0.3, rail = 0.26, cs = 0.36;
+  const grime = (x, y) => 0.6 + 0.4 * Math.min(1, y / (H * 0.6));
+  const P = [], wallH = H - 2 * rail + 0.04;
+  // corrugated side walls and the closed end
+  for (const s of [-1, 1]) P.push(part(corrugated(L - 2 * post, wallH, 0.11, 0.66), color, [0, rail - 0.02, s * (W / 2 - 0.05)], [0, s > 0 ? 0 : Math.PI, 0], grime));
+  P.push(part(corrugated(W - 2 * post, wallH, 0.1, 0.66), color, [-(L / 2 - 0.05), rail - 0.02, 0], [0, -Math.PI / 2, 0], grime));
+  // roof (transverse corrugation, flat shaded: seen at grazing angles it is all moire), slightly below the top rails
+  P.push(part(corrugated(L - 0.2, W - 0.2, 0.05, 0.75, 0), shadeOf(color, 0.92), [0, H - 0.04, (W - 0.2) / 2], [-Math.PI / 2, 0, 0]));
+  // door end: two leaves, seam, four locking bars with cams and handles, hinges
+  const leaf = (W - 2 * post) / 2 - 0.02, dx = L / 2 - 0.17;
+  for (const s of [-1, 1]) {
+    P.push(part(corrugated(leaf, wallH, 0.05, 0.42, 0), color, [dx, rail - 0.02, s * (leaf / 2 + 0.02)], [0, Math.PI / 2, 0], grime));
+    for (const f of [0.22, 0.72]) {
+      const z = s * (0.02 + leaf * f);
+      P.push(part(new THREE.CylinderGeometry(0.045, 0.045, wallH - 0.06, 6), steel, [L / 2 - 0.1, H / 2, z]));
+      for (const y of [rail + 0.08, H - rail - 0.08]) P.push(part(new THREE.BoxGeometry(0.12, 0.12, 0.16), steel, [L / 2 - 0.09, y, z]));
+      P.push(part(new THREE.BoxGeometry(0.07, 0.07, 0.42), steel, [L / 2 - 0.06, H * 0.45, z + s * 0.2]));
+    }
+    for (const y of [0.22, 0.5, 0.78]) P.push(part(new THREE.BoxGeometry(0.1, 0.18, 0.12), cast, [L / 2 - 0.08, rail + (H - 2 * rail) * y, s * (W / 2 - post - 0.05)]));
+  }
+  P.push(part(new THREE.BoxGeometry(0.06, wallH, 0.05), cast, [L / 2 - 0.15, H / 2, 0]));
+  // top and bottom rails all round, corner posts, corner castings
+  for (const y of [rail / 2, H - rail / 2]) {
+    for (const s of [-1, 1]) {
+      P.push(part(rbox(L - 2 * cs + 0.04, rail, 0.2, 0.05), frame, [0, y, s * (W / 2 - 0.1)]));
+      P.push(part(rbox(0.2, rail, W - 2 * cs + 0.04, 0.05), frame, [s * (L / 2 - 0.1), y, 0]));
+    }
+  }
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    P.push(part(rbox(post, H - 2 * 0.28 + 0.04, post, 0.06), frame, [sx * (L / 2 - post / 2 - 0.01), H / 2, sz * (W / 2 - post / 2 - 0.01)]));
+    for (const y of [0.14, H - 0.14]) P.push(part(new THREE.BoxGeometry(cs, 0.28, cs), cast, [sx * (L / 2 - cs / 2), y, sz * (W / 2 - cs / 2)]));
+  }
+  return mergeParts(P);
+}
+
+// Wooden crate: frame boards on every edge, recessed planks with gaps, a cross brace on each side and the lid.
+// Boards are built along X and turned, so the wood grain (texture u) runs along each board.
+function crateGeo(Wx, Wz, H, color, seed) {
+  const F = 0.36, T = 0.14, gap = 0.07, P = [];
+  let s = seed * 9301 + 49297; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  const plank = () => shadeOf(color, 0.86 + rnd() * 0.22), frameCol = shadeOf(color, 0.78), brace = shadeOf(color, 0.9);
+  const board = (len, th, wd, c, pos, rot, round = true) => P.push(part(round ? rbox(len, th, wd, 0.045, 1) : new THREE.BoxGeometry(len, th, wd), c, pos, rot));
+  P.push(part(new THREE.BoxGeometry(Wx - 0.3, H - 0.3, Wz - 0.3), '#3A2A18', [0, H / 2, 0])); // dark core behind the gaps
+  // frame: 4 posts, 4 bottom and 4 top rails
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) board(H, F, F, frameCol, [sx * (Wx / 2 - F / 2), H / 2, sz * (Wz / 2 - F / 2)], [0, 0, Math.PI / 2]);
+  for (const y of [F / 2, H - F / 2]) for (const sg of [-1, 1]) {
+    board(Wx - 2 * F + 0.02, F, F, frameCol, [0, y, sg * (Wz / 2 - F / 2)]);
+    board(Wz - 2 * F + 0.02, F, F, frameCol, [sg * (Wx / 2 - F / 2), y, 0], [0, Math.PI / 2, 0]);
+  }
+  // side planks + diagonal brace on each face
+  const n = 3, inner = H - 2 * F, ph = (inner - (n - 1) * gap) / n;
+  for (const [axis, len, half] of [['z', Wx, Wz / 2], ['x', Wz, Wx / 2]]) for (const sg of [-1, 1]) {
+    const ry = axis === 'z' ? 0 : Math.PI / 2, at = (o, y) => axis === 'z' ? [o, y, sg * (half - 0.1 - T / 2)] : [sg * (half - 0.1 - T / 2), y, o];
+    for (let i = 0; i < n; i++) board(len - 2 * F + 0.02, ph, T, plank(), at(0, F + ph / 2 + i * (ph + gap)), [0, ry, 0], false);
+    const bw = len - 2 * F, ang = Math.atan2(inner, bw) * (sg > 0 ? 1 : -1), atB = axis === 'z' ? [0, H / 2, sg * (half - 0.04 - T / 2)] : [sg * (half - 0.04 - T / 2), H / 2, 0];
+    P.push(part(rbox(Math.hypot(bw, inner) - 0.25, F * 0.8, T, 0.045), brace, atB, axis === 'z' ? [0, 0, ang] : [0, Math.PI / 2, ang]));
+  }
+  // lid planks + one diagonal brace
+  const m = 5, lw = (Wz - 2 * F - (m - 1) * gap) / m;
+  for (let i = 0; i < m; i++) board(Wx - 2 * F + 0.02, T, lw, plank(), [0, H - 0.1 - T / 2, -Wz / 2 + F + lw / 2 + i * (lw + gap)], null, false);
+  P.push(part(rbox(Math.hypot(Wx - 2 * F, Wz - 2 * F) - 0.3, T, F * 0.8, 0.045), brace, [0, H - 0.03 - T / 2, 0], [0, Math.atan2(Wz - 2 * F, Wx - 2 * F), 0]));
+  return mergeParts(P);
+}
+const woodTex = canvasTex(512, 128, (g, w, h) => {
+  g.fillStyle = '#E9DCC4'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 70; i++) { // long grain streaks
+    const y = Math.random() * h; g.strokeStyle = `rgba(90,60,30,${0.05 + Math.random() * 0.12})`; g.lineWidth = 0.6 + Math.random() * 1.8;
+    g.beginPath(); g.moveTo(0, y); for (let x = 0; x <= w; x += 32) g.lineTo(x, y + Math.sin(x * 0.02 + i) * 2.5); g.stroke();
+  }
+  for (let i = 0; i < 3; i++) { // knots
+    const x = Math.random() * w, y = Math.random() * h; g.fillStyle = 'rgba(95,60,28,.35)';
+    g.beginPath(); g.ellipse(x, y, 7 + Math.random() * 5, 3 + Math.random() * 2, 0, 0, TAU); g.fill();
+  }
+});
+woodTex.wrapS = woodTex.wrapT = THREE.RepeatWrapping;
+
+// Tyre stack: three tyres with steel rims, filling the r x r x H footprint.
+function tyreStackGeo(R, H, color, seed) {
+  const th = H / 3, P = [], tyre = tyreGeo(R, R * 0.56, th / 2 - 0.01, 15, false), rim = rimGeo(R * 0.57, th * 0.36, 16);
+  for (let i = 0; i < 3; i++) {
+    const ry = seed * 1.7 + i * 2.1;
+    P.push(part(tyre, color, [0, th / 2 + i * th, 0], [0, ry, 0]));
+    P.push(part(rim, i === 1 ? '#C9A227' : '#9EA4AD', [0, th / 2 + i * th, 0], [0, ry, 0]));
+  }
+  return mergeParts(P);
+}
+
+// Shared materials: vertex coloured, so one material (and one draw call) covers each obstacle kind.
+// Container paint is fairly rough and barely metallic: a sharp highlight on sub-pixel ridges reads as moire.
+const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.1 });
+const crateMat = new THREE.MeshStandardMaterial({ map: woodTex, vertexColors: true, roughness: 0.85, metalness: 0 });
+const tyreMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.15 });
+(function buildObstacles() {
+  const lists = { container: [], crate: [], tires: [] };
+  OBST.forEach((o, i) => {
+    const long = o.d > o.w, L = long ? o.d : o.w, W = long ? o.w : o.d;
+    // long ones turn to follow Z; square ones get varied facings (container doors point different ways)
+    const ry = long ? (i % 2 ? 1 : -1) * Math.PI / 2 : (o.w === o.d ? (i % 4) * Math.PI / 2 : 0);
+    const M = new THREE.Matrix4().makeRotationY(ry).setPosition(o.x, 0, o.z);
+    const geo = o.kind === 'container' ? containerGeo(L, W, o.h, o.color) : o.kind === 'crate' ? crateGeo(L, W, o.h, o.color, i) : tyreStackGeo(Math.min(o.w, o.d) / 2, o.h, o.color, i);
+    geo.applyMatrix4(M); (lists[o.kind] || lists.container).push(geo);
+  });
+  for (const [kind, mat] of [['container', paintMat], ['crate', crateMat], ['tires', tyreMat]]) {
+    if (!lists[kind].length) continue;
+    const m = new THREE.Mesh(mergeParts(lists[kind]), mat); m.castShadow = m.receiveShadow = true; m.name = 'obstacles-' + kind; scene.add(m);
   }
 })();
 
-// obstacles
-function stripeTex(color, vertical) {
-  return canvasTex(128, 128, (g, w, h) => {
-    g.fillStyle = color; g.fillRect(0, 0, w, h);
-    g.fillStyle = 'rgba(0,0,0,.14)';
-    for (let i = 0; i < 8; i++) vertical ? g.fillRect(i * 16 + 10, 0, 4, h) : g.fillRect(0, i * 16 + 10, w, 4);
-    g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 6; g.strokeRect(0, 0, w, h);
-  });
-}
-for (const o of OBST) {
-  if (o.kind === 'tires') {
-    const m = lam('#2E2E36'), rim = lam('#4A4A56');
-    for (let i = 0; i < 3; i++) {
-      const t = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.55, 10, 20), i === 1 ? rim : m);
-      t.rotation.x = Math.PI / 2; t.position.set(o.x, 0.55 + i * 1.05, o.z); t.castShadow = t.receiveShadow = true; scene.add(t);
-    }
-    continue;
-  }
-  const mat = new THREE.MeshLambertMaterial({ map: stripeTex(o.color, o.kind === 'container') });
-  const box = new THREE.Mesh(new THREE.BoxGeometry(o.w, o.h, o.d), mat);
-  box.position.set(o.x, o.h / 2, o.z); box.castShadow = box.receiveShadow = true; scene.add(box);
-}
-
 /* ---------- item boxes ---------- */
-const qTex = canvasTex(128, 128, (g, w, h) => {
-  g.fillStyle = '#7C4DFF'; g.fillRect(0, 0, w, h);
-  g.strokeStyle = '#FFF4DC'; g.lineWidth = 10; g.strokeRect(8, 8, w - 16, h - 16);
-  g.fillStyle = '#FFF4DC'; g.font = 'bold 84px Arial Black, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('?', w / 2, h / 2 + 4);
+// (render pipeline owns the item box look: glow and bloom)
+// One face texture: violet gradient panel, bright frame and "?" glyph. A matching emissive
+// map lights only the frame and glyph, pushed into HDR so they (and nothing else) bloom.
+function qFace(g, w, h, glow) {
+  if (glow) { g.fillStyle = '#000'; g.fillRect(0, 0, w, h); }
+  else {
+    const grd = g.createLinearGradient(0, 0, w, h); grd.addColorStop(0, '#8F63FF'); grd.addColorStop(1, '#5B2FD6');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,.10)'; g.fillRect(22, 22, w - 44, (h - 44) / 2);
+  }
+  const ink = glow ? '#FFFFFF' : '#FFF4DC';
+  g.strokeStyle = ink; g.lineWidth = 12; g.lineJoin = 'round';
+  g.beginPath(); g.roundRect ? g.roundRect(14, 14, w - 28, h - 28, 22) : g.rect(14, 14, w - 28, h - 28); g.stroke();
+  g.font = '900 150px "Arial Black", Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  if (!glow) { g.lineWidth = 14; g.strokeStyle = '#3B1A9E'; g.strokeText('?', w / 2, h / 2 + 10); }
+  g.fillStyle = ink; g.fillText('?', w / 2, h / 2 + 10);
+}
+const qTex = canvasTex(256, 256, (g, w, h) => qFace(g, w, h, false));
+const qGlowTex = canvasTex(256, 256, (g, w, h) => qFace(g, w, h, true));
+const boxGeo = new RoundedBoxGeometry(2, 2, 2, 3, 0.22);
+const boxMat = new THREE.MeshStandardMaterial({ map: qTex, emissiveMap: qGlowTex, emissive: new THREE.Color('#FFE9B8'), emissiveIntensity: 1.0, roughness: 0.55, metalness: 0 });
+// floor pads: one merged mesh with a soft radial glow texture (one draw call for all 13)
+const padTex = canvasTex(128, 128, (g, w, h) => {
+  const r = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+  r.addColorStop(0, 'rgba(255,255,255,.55)'); r.addColorStop(0.62, 'rgba(255,255,255,.35)'); r.addColorStop(0.72, 'rgba(255,255,255,.95)');
+  r.addColorStop(0.8, 'rgba(255,255,255,.9)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, w, h);
 });
-const boxGeo = new THREE.BoxGeometry(2, 2, 2);
-const boxMat = new THREE.MeshLambertMaterial({ map: qTex, emissive: new THREE.Color('#3A1E99'), emissiveIntensity: 0.6 });
+const padMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#8A5CFF'), map: padTex, transparent: true, opacity: 0.75, depthWrite: false });
 const boxes = BOX_SPOTS.map(([x, z], i) => {
   const m = new THREE.Mesh(boxGeo, boxMat); m.position.set(x, 1.6, z); m.castShadow = true; scene.add(m);
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.08, 24), new THREE.MeshBasicMaterial({ color: '#7C4DFF', transparent: true, opacity: .35 }));
-  pad.position.set(x, 0.05, z); scene.add(pad);
   return { i, x, z, availableAt: 0, mesh: m, phase: i * 0.7 };
 });
+{
+  const pads = mergeGeometries(BOX_SPOTS.map(([x, z]) => new THREE.CircleGeometry(2.3, 32).rotateX(-Math.PI / 2).translate(x, 0.05, z)));
+  const padMesh = new THREE.Mesh(pads, padMat); padMesh.renderOrder = 1; scene.add(padMesh);
+}
 
-/* ---------- karts ---------- */
-const darkMat = lam('#2B2F3A');
+/* ---------- karts (MODELS) ---------- */
+// Each kart view uses a Kenney Car Kit kart (CC0, assets/car-kit); until that model has loaded it shows a
+// procedural kart (always available) and swaps with a short animation when the model arrives. Geometry is shared between karts; each kart owns
+// only its body material (player colour, star glow) and its name tag.
+const KART_DIR = 'assets/car-kit/', KART_VARIANTS = ['oobi', 'oodi', 'ooli', 'oopi', 'oozi'];
+// Kenney karts are ~1 x 1.4 units: scale to the old footprint (about 2.5 wide; stretched a little in length)
+const KART_SCALE = new THREE.Vector3(2.6, 2.6, 2.95), KART_Z = -0.25, DRIVER_SCALE = 0.72;
+// colormap.png is a 16 x 4 grid of gradient swatches. The kart chassis uses swatch (11, 2) and the helmet
+// (13, 2); their neighbours (10, 2) and (12, 2) are repainted too so mipmaps don't bleed in other colours.
+const KART_SWATCHES = [[10, 2], [11, 2], [12, 2], [13, 2]];
+
+// Recolour a kart view (remote players can change colour).
+function recolorKart(v, color) {
+  v.color = color;
+  if (v.kenney) v.bodyMat.map = kartTex(color); else v.bodyMat.color.set(color);
+}
+// Name tags use the HUD's heading face (Barlow Condensed 700) and its text/ink colours. The webfont may
+// not be loaded when a tag is first drawn (no DOM text uses that weight yet), so each tag redraws itself
+// once the face arrives.
+const TAG_FAMILY = '"Barlow Condensed", Inter, sans-serif';
 function nameSprite(text) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
   const g = cv.getContext('2d');
-  g.font = '800 34px Nunito, Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.lineWidth = 7; g.strokeStyle = '#23304A'; g.strokeText(text, 128, 34); g.fillStyle = '#FFF4DC'; g.fillText(text, 128, 34);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
-  sp.scale.set(6.4, 1.6, 1); sp.position.y = 4; sp.renderOrder = 10; return sp;
+  const draw = () => {
+    g.clearRect(0, 0, 256, 64);
+    let px = 40; g.font = `700 ${px}px ${TAG_FAMILY}`;
+    const w = g.measureText(text).width; if (w > 240) { px = Math.max(24, Math.floor(px * 240 / w)); g.font = `700 ${px}px ${TAG_FAMILY}`; } // long names shrink to fit
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    g.lineWidth = 6; g.strokeStyle = 'rgba(13,18,28,.85)'; g.strokeText(text, 128, 33); g.fillStyle = '#F3F5F9'; g.fillText(text, 128, 33);
+  };
+  draw();
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  if (document.fonts) document.fonts.load(`700 40px ${TAG_FAMILY}`, text).then(f => { if (f.length && sp.parent) { draw(); tex.needsUpdate = true; } }).catch(() => {});
+  sp.scale.set(6.4, 1.6, 1); sp.position.y = 4.7; sp.renderOrder = 10; return sp;
 }
+
+// --- shared power-up meshes (spike ring, ice block, shield bubble), sized for the new karts
+const spikeGeo = (() => {
+  const P = [part(new THREE.TorusGeometry(2.5, 0.16, 8, 40), '#FFFFFF', null, [Math.PI / 2, 0, 0])];
+  for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; P.push(part(new THREE.ConeGeometry(0.36, 1.25, 10), '#FFFFFF', [Math.cos(a) * 3.05, 0, Math.sin(a) * 3.05], [0, -a, -Math.PI / 2])); }
+  return mergeParts(P);
+})();
+const spikeMat = new THREE.MeshStandardMaterial({ color: '#D5DAE3', roughness: 0.3, metalness: 0.7 });
+const iceGeo = rbox(3.4, 3.9, 4.9, 0.45, 2);
+const iceMat = new THREE.MeshStandardMaterial({ color: '#BFEFFF', transparent: true, opacity: 0.55, roughness: 0.1, metalness: 0 });
+const shieldGeo = new THREE.SphereGeometry(3.05, 24, 16);
+const shieldMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: 0.2, depthWrite: false });
+
+// --- procedural kart (built once): player-colour shell, trim, one shared wheel (tyre + rim)
+const kartTrimMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.2 });
+let procKart = null;
+function procKartGeo() {
+  if (procKart) return procKart;
+  const W = '#FFFFFF', dark = '#2B2F3A', seat = '#1D2129', steel = '#B9BEC6', suit = '#ECE8E0', glove = '#2B2F3A';
+  const body = [
+    part(rbox(1.9, 0.5, 2.3, 0.22, 3), W, [0, 0.8, -0.15]),                 // tub
+    part(rbox(1.3, 0.42, 1.45, 0.2, 3), W, [0, 0.68, 1.5], [0.08, 0, 0]),   // nose
+    part(rbox(0.42, 0.42, 1.7, 0.18, 2), W, [-1.0, 0.64, 0.15]), part(rbox(0.42, 0.42, 1.7, 0.18, 2), W, [1.0, 0.64, 0.15]), // side pods
+    part(rbox(2.4, 0.1, 0.62, 0.05), W, [0, 1.82, -1.85]),                  // rear wing
+    part(new THREE.SphereGeometry(0.56, 22, 16), W, [0, 2.42, -0.45]),      // helmet
+  ];
+  const trim = [
+    part(rbox(2.1, 0.18, 3.9, 0.08), dark, [0, 0.42, 0.15]),                // floor pan
+    part(rbox(2.4, 0.26, 0.32, 0.12, 2), dark, [0, 0.5, 2.3]),             // front bumper
+    part(rbox(2.5, 0.28, 0.34, 0.12, 2), dark, [0, 0.55, -2.0]),           // rear bumper
+    part(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 8), steel, [-1.33, 0.55, 0.05], [Math.PI / 2, 0, 0]),
+    part(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 8), steel, [1.33, 0.55, 0.05], [Math.PI / 2, 0, 0]), // nerf bars
+    part(rbox(1.0, 0.55, 0.7, 0.1), '#3A3F4D', [0, 1.02, -1.4]),          // engine
+    part(new THREE.CylinderGeometry(0.09, 0.07, 0.75, 10), steel, [-0.32, 1.32, -1.78], [-0.9, 0, 0]),
+    part(new THREE.CylinderGeometry(0.09, 0.07, 0.75, 10), steel, [0.32, 1.32, -1.78], [-0.9, 0, 0]), // exhausts
+    part(rbox(0.1, 0.5, 0.14, 0.03), dark, [-0.55, 1.52, -1.82]), part(rbox(0.1, 0.5, 0.14, 0.03), dark, [0.55, 1.52, -1.82]), // wing struts
+    part(rbox(0.08, 0.44, 0.66, 0.03), dark, [-1.22, 1.72, -1.85]), part(rbox(0.08, 0.44, 0.66, 0.03), dark, [1.22, 1.72, -1.85]), // end plates
+    part(rbox(1.0, 0.24, 0.9, 0.1), seat, [0, 1.1, -0.5]),                  // seat
+    part(rbox(1.0, 0.95, 0.2, 0.09), seat, [0, 1.58, -1.0], [-0.18, 0, 0]),
+    part(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 8), dark, [0, 1.36, 0.69], [-0.9, 0, 0]),  // steering column
+    part(new THREE.TorusGeometry(0.3, 0.055, 8, 22), seat, [0, 1.56, 0.5], [-0.6, 0, 0]),       // steering wheel
+    part(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 10), '#E8553E', [0, 1.56, 0.5], [Math.PI / 2 - 0.6, 0, 0]),
+    part(new THREE.CapsuleGeometry(0.42, 0.42, 4, 12), suit, [0, 1.68, -0.5], [0.15, 0, 0]),  // driver torso
+    part(new THREE.CapsuleGeometry(0.13, 0.62, 3, 8), suit, [-0.36, 1.74, 0.02], [-1.25, 0, 0.12]),
+    part(new THREE.CapsuleGeometry(0.13, 0.62, 3, 8), suit, [0.36, 1.74, 0.02], [-1.25, 0, -0.12]), // arms
+    part(new THREE.SphereGeometry(0.14, 10, 8), glove, [-0.27, 1.6, 0.44]), part(new THREE.SphereGeometry(0.14, 10, 8), glove, [0.27, 1.6, 0.44]),
+    part(new THREE.CylinderGeometry(0.18, 0.2, 0.25, 10), dark, [0, 2.0, -0.47]),               // neck
+    part(new THREE.SphereGeometry(0.585, 22, 10, Math.PI / 2 - 0.95, 1.9, 1.08, 0.72), '#141A26', [0, 2.42, -0.45]), // visor
+    part(new THREE.TorusGeometry(0.57, 0.06, 6, 28, Math.PI), '#F5F1E6', [0, 2.42, -0.45], [0, Math.PI / 2, 0]),     // helmet stripe
+  ];
+  const tyre = tyreGeo(0.6, 0.36, 0.27, 14, true), rim = rimGeo(0.37, 0.25, 18);
+  const wheel = mergeParts([part(tyre, '#2A2C33', null, [0, 0, Math.PI / 2]), part(rim, '#D9DCE2', null, [0, 0, Math.PI / 2])]);
+  procKart = { body: mergeParts(body), trim: mergeParts(trim), wheel, wheelAt: [[-1.25, 0.6, 1.25], [1.25, 0.6, 1.25], [-1.25, 0.6, -1.15], [1.25, 0.6, -1.15]] };
+  return procKart;
+}
+function proceduralKart(color) {
+  const G = procKartGeo(), root = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.38, metalness: 0.15 });
+  for (const [geo, mat] of [[G.body, bodyMat], [G.trim, kartTrimMat]]) { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; root.add(m); }
+  const wheels = G.wheelAt.map(([x, y, z]) => { const m = new THREE.Mesh(G.wheel, tyreMat); m.position.set(x, y, z); m.castShadow = true; root.add(m); return m; });
+  return { root, bodyMat, wheels, kenney: false };
+}
+
+// --- Kenney karts: loaded once per variant, geometry shared by every kart of that variant
+const kartModels = new Map();  // variant -> Promise<{ body, wheels: [{ geo, pos }] } | null>
+const kartModelsLoaded = new Map(); // variant -> the same model once loaded, for synchronous use
+let kartLoader = null, kartPalette = null, kenneyWheelMat = null;
+function loadKartModel(name) {
+  if (!kartModels.has(name)) kartModels.set(name, (async () => {
+    if (location.protocol === 'file:') return null; // no fetch from file://: keep the procedural kart
+    kartLoader = kartLoader || new GLTFLoader();
+    const gltf = await kartLoader.loadAsync(KART_DIR + 'kart-' + name + '.glb');
+    gltf.scene.updateMatrixWorld(true);
+    const parts = [], wheels = [];
+    gltf.scene.traverse(o => {
+      if (!o.isMesh) return;
+      if (!kartPalette && o.material.map) { kartPalette = o.material.map; kenneyWheelMat = new THREE.MeshStandardMaterial({ map: kartPalette, roughness: 0.75, metalness: 0 }); }
+      if (/^wheel/i.test(o.name)) { wheels.push({ geo: o.geometry, pos: o.getWorldPosition(new THREE.Vector3()) }); return; }
+      let m = o.matrixWorld;
+      if (/^character/i.test(o.name)) {
+        // Kenney's big-headed driver is as wide as the kart: shrink it around its seat (its local min y is
+        // 0.03) so the chase view shows the player's chassis and the kart ahead instead of one big helmet.
+        const base = new THREE.Vector3(0, 0.03, 0).applyMatrix4(o.matrixWorld);
+        m = new THREE.Matrix4().makeTranslation(base.x, base.y, base.z).multiply(new THREE.Matrix4().makeScale(DRIVER_SCALE, DRIVER_SCALE, DRIVER_SCALE))
+          .multiply(new THREE.Matrix4().makeTranslation(-base.x, -base.y, -base.z)).multiply(o.matrixWorld);
+      }
+      parts.push(o.geometry.clone().applyMatrix4(m)); // chassis + driver, merged
+    });
+    if (!kartPalette || wheels.length !== 4 || !parts.length) throw new Error('unexpected kart model ' + name);
+    const model = { body: mergeParts(parts), wheels };
+    kartModelsLoaded.set(name, model);
+    return model;
+  })().catch(e => { console.info('Kenney kart unavailable, using the built-in kart:', e.message); return null; }));
+  return kartModels.get(name);
+}
+// The colour palette with the chassis + helmet swatches repainted in one player colour (cached per colour).
+// Each pixel keeps its swatch's light-to-dark gradient: new = colour * (pixel luminance / swatch mean), in linear light.
+const kartTexCache = new Map();
+const toLin = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+const toSrgb = c => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+function kartTex(color) {
+  let tex = kartTexCache.get(color);
+  if (tex) return tex;
+  const img = kartPalette.image, W = img.width, H = img.height, cw = W / 16, ch = H / 4;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+  const c = new THREE.Color(color); // linear
+  for (const [cx, cy] of KART_SWATCHES) {
+    const d = g.getImageData(cx * cw, cy * ch, cw, ch), px = d.data, n = px.length / 4, lum = new Float32Array(n);
+    let mean = 0;
+    for (let i = 0; i < n; i++) { lum[i] = 0.2126 * toLin(px[i * 4] / 255) + 0.7152 * toLin(px[i * 4 + 1] / 255) + 0.0722 * toLin(px[i * 4 + 2] / 255); mean += lum[i] / n; }
+    for (let i = 0; i < n; i++) {
+      const k = lum[i] / (mean || 1);
+      px[i * 4] = Math.round(toSrgb(Math.min(1, c.r * k)) * 255); px[i * 4 + 1] = Math.round(toSrgb(Math.min(1, c.g * k)) * 255); px[i * 4 + 2] = Math.round(toSrgb(Math.min(1, c.b * k)) * 255);
+    }
+    g.putImageData(d, cx * cw, cy * ch);
+  }
+  tex = new THREE.CanvasTexture(cv);
+  for (const k of ['flipY', 'colorSpace', 'wrapS', 'wrapT', 'magFilter', 'minFilter', 'anisotropy']) tex[k] = kartPalette[k];
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = Math.max(tex.anisotropy, 4);
+  kartTexCache.set(color, tex);
+  return tex;
+}
+function kenneyKart(m, color) {
+  const root = new THREE.Group(); root.scale.copy(KART_SCALE); root.position.z = KART_Z;
+  const bodyMat = new THREE.MeshStandardMaterial({ map: kartTex(color), roughness: 0.5, metalness: 0.05 });
+  const body = new THREE.Mesh(m.body, bodyMat); body.castShadow = body.receiveShadow = true; root.add(body);
+  // each wheel spins inside a pivot that cancels the length stretch, so it stays round
+  const wheels = m.wheels.map(w => {
+    const pivot = new THREE.Group(); pivot.position.copy(w.pos); pivot.scale.set(1, 1, KART_SCALE.y / KART_SCALE.z); root.add(pivot);
+    const o = new THREE.Mesh(w.geo, kenneyWheelMat); o.castShadow = true; pivot.add(o); return o;
+  });
+  return { root, bodyMat, wheels, kenney: true };
+}
+// Put a model (procedural or Kenney) into a kart view, replacing the previous one. With `animate`, the old
+// model shrinks away and the new one pops up over SWAP_MS (driven by styleKart) instead of switching in one frame.
+const SWAP_MS = 320;
+function dropModel(v, m) { v.g.remove(m.root); m.bodyMat.dispose(); }
+function endSwap(v) { if (!v.swap) return; dropModel(v, v.swap.old); v.model.root.scale.copy(v.swap.to); v.model.root.visible = true; v.swap = null; }
+function setKartModel(v, m, animate) {
+  endSwap(v);
+  const old = v.model;
+  v.model = m; v.kenney = m.kenney; v.bodyMat = m.bodyMat; v.wheels = m.wheels; v.g.add(m.root);
+  if (!old) return;
+  if (!animate) { dropModel(v, old); return; }
+  v.swap = { old, from: old.root.scale.clone(), to: m.root.scale.clone(), t0: performance.now() };
+  m.root.visible = false;
+}
+function stepSwap(v) {
+  const S = v.swap, k = Math.min(1, (performance.now() - S.t0) / SWAP_MS);
+  if (k >= 1) { endSwap(v); return; }
+  const out = Math.max(0, 1 - k / 0.45);               // old model shrinks away in the first ~45%
+  const u = Math.max(0, (k - 0.25) / 0.75), c = 1.70158; // new one grows with a small overshoot from 25%
+  const grow = u <= 0 ? 0 : 1 + (c + 1) * Math.pow(u - 1, 3) + c * Math.pow(u - 1, 2);
+  S.old.root.visible = out > 0.02; S.old.root.scale.copy(S.from).multiplyScalar(Math.max(out, 0.02));
+  v.model.root.visible = grow > 0.02; v.model.root.scale.copy(S.to).multiplyScalar(Math.max(grow, 0.02));
+}
+// The Kenney model variant a kart of this colour gets (driver variety follows the colour slot).
+const kartVariant = color => KART_VARIANTS[Math.max(0, COLORS.indexOf(color)) % KART_VARIANTS.length];
+// Resolves once this colour's kart model has loaded (or failed), or after `ms`, whichever is first.
+const kartModelReady = (color, ms) => Promise.race([loadKartModel(kartVariant(color)), new Promise(r => setTimeout(r, ms))]);
+
 function buildKart(color) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color });
-  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
-  add(new THREE.BoxGeometry(2.2, 0.7, 3.2), bodyMat, 0, 0.75, 0);
-  add(new THREE.BoxGeometry(1.8, 0.45, 0.9), bodyMat, 0, 0.62, 1.9);
-  add(new THREE.BoxGeometry(2.5, 0.35, 0.4), darkMat, 0, 0.5, 2.4);
-  add(new THREE.BoxGeometry(1.2, 0.9, 0.4), darkMat, 0, 1.4, -0.75);
-  add(new THREE.CylinderGeometry(0.45, 0.55, 0.8, 10), lam('#F5F1E6'), 0, 1.6, -0.25);
-  add(new THREE.SphereGeometry(0.6, 16, 12), bodyMat, 0, 2.3, -0.2);
-  add(new THREE.BoxGeometry(0.8, 0.28, 0.2), lam('#1C2230'), 0, 2.3, 0.33);
-  add(new THREE.BoxGeometry(2.5, 0.14, 0.7), bodyMat, 0, 1.55, -1.7);
-  add(new THREE.BoxGeometry(0.15, 0.6, 0.15), darkMat, -0.8, 1.2, -1.6);
-  add(new THREE.BoxGeometry(0.15, 0.6, 0.15), darkMat, 0.8, 1.2, -1.6);
-  const wheelGeo = new THREE.CylinderGeometry(0.58, 0.58, 0.55, 14); wheelGeo.rotateZ(Math.PI / 2);
-  const wheels = [[-1.3, 1.15], [1.3, 1.15], [-1.3, -1.1], [1.3, -1.1]].map(([x, z]) => add(wheelGeo, darkMat, x, 0.58, z));
-  // spike ring
-  const spikes = new THREE.Group();
-  const spikeMat = lam('#C9CED8');
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.18, 8, 32), spikeMat); ring.rotation.x = Math.PI / 2; spikes.add(ring);
-  for (let i = 0; i < 8; i++) {
-    const a = i / 8 * TAU, c = new THREE.Mesh(new THREE.ConeGeometry(0.38, 1.3, 8), spikeMat);
-    c.position.set(Math.cos(a) * 2.9, 0, Math.sin(a) * 2.9); c.rotation.z = -Math.PI / 2; c.rotation.y = -a; spikes.add(c);
-  }
-  spikes.position.y = 0.9; spikes.visible = false; g.add(spikes);
-  const ice = new THREE.Mesh(new THREE.BoxGeometry(3.4, 3, 4.4), new THREE.MeshLambertMaterial({ color: '#BFEFFF', transparent: true, opacity: .6 }));
-  ice.position.y = 1.4; ice.visible = false; g.add(ice);
-  const shield = new THREE.Mesh(new THREE.SphereGeometry(2.8, 20, 14), new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: .2, depthWrite: false }));
-  shield.position.y = 1.2; shield.renderOrder = 2; shield.visible = false; g.add(shield);
-  return { g, bodyMat, wheels, spikes, ice, shield, tag: null };
+  const spikes = new THREE.Mesh(spikeGeo, spikeMat); spikes.position.y = 0.9; spikes.visible = false; spikes.castShadow = true; g.add(spikes);
+  const ice = new THREE.Mesh(iceGeo, iceMat); ice.position.y = 1.9; ice.visible = false; g.add(ice);
+  const shield = new THREE.Mesh(shieldGeo, shieldMat); shield.position.y = 1.6; shield.renderOrder = 2; shield.visible = false; g.add(shield);
+  const v = { g, bodyMat: null, wheels: null, spikes, ice, shield, tag: null, color, model: null, kenney: false, disposed: false };
+  v.setColor = c => recolorKart(v, c); // handy for tests (?debug: SK.bots[0].view.setColor('#2F9BD8'))
+  // Kenney kart straight away if its model is already loaded, else the procedural kart until it is.
+  const variant = kartVariant(color), ready = kartModelsLoaded.get(variant);
+  setKartModel(v, ready ? kenneyKart(ready, color) : proceduralKart(color));
+  // A model that arrives while the kart is on screen swaps in with a quick scale pop behind a puff, not in one frame.
+  if (!ready) loadKartModel(variant).then(m => {
+    if (!m || v.disposed) return;
+    const shown = !!v.g.parent && v.g.visible;
+    setKartModel(v, kenneyKart(m, v.color), shown);
+    if (shown) puffFx(v.g.position.x, v.g.position.z, v.color, 1.4);
+  });
+  return v;
 }
-function disposeKart(v) { scene.remove(v.g); v.g.traverse(o => { if (o.geometry && o.geometry !== boxGeo) o.geometry.dispose(); }); }
+function disposeKart(v) {
+  v.disposed = true; scene.remove(v.g);
+  if (v.swap) { v.swap.old.bodyMat.dispose(); v.swap = null; }
+  if (v.model) v.model.bodyMat.dispose(); // geometry and the other materials are shared
+  if (v.tag) { v.tag.material.map.dispose(); v.tag.material.dispose(); }
+}
 function setTag(v, text) {
   if (v.tag) { v.g.remove(v.tag); v.tag.material.map.dispose(); v.tag.material.dispose(); }
   v.tag = nameSprite(text); v.g.add(v.tag); v.tagText = text;
@@ -419,18 +1615,35 @@ function styleKart(v, s, t) {
   v.g.visible = s.alive;
   if (!s.alive) return;
   v.g.position.set(s.x, 0, s.z); v.g.rotation.y = s.yaw;
+  if (v.swap) stepSwap(v);
   v.spikes.visible = s.spikes; if (s.spikes) v.spikes.rotation.y = t * 6;
   v.ice.visible = s.frozen;
   v.shield.visible = s.protect && (Math.floor(t * 8) % 2 === 0);
   if (s.star) { v.bodyMat.emissive.setHSL((t * 1.5) % 1, 1, 0.35); } else v.bodyMat.emissive.setRGB(0, 0, 0);
-  const spin = (s.sp || 0) * 0.06; for (const w of v.wheels) w.rotation.x += spin;
+  // wheels roll at the kart's speed (radius ~0.55), whatever the frame rate
+  const dt = Math.min(0.1, Math.max(0, t - (v.lastT === undefined ? t : v.lastT))); v.lastT = t;
+  const spin = (s.sp || 0) * dt / 0.55; for (const w of v.wheels) w.rotation.x = (w.rotation.x + spin) % TAU;
 }
 
+/* =========================================================================
+   FX: projectiles, explosions, smoke, skid marks (render pipeline owns glow).
+   ========================================================================= */
 /* ---------- projectile & fx meshes ---------- */
+// HDR colour for glowing effects: scales a colour so its linear luminance reaches `lum`
+// (bloom threshold is BLOOM.threshold). Tone mapping stays on, so it still reads as the hue.
+// `deep` (0..1) darkens the weaker channels first. Note ACES desaturates anything bright: warm
+// colours at lum >= the bloom threshold come out peach/cream, so effects that must read as a
+// saturated hue keep their body below the threshold and let a small, hotter core do the glowing.
+function hdr(c, lum, deep = 0) {
+  const col = new THREE.Color(c); col.g *= 1 - deep * 0.35; col.b *= 1 - deep * 0.6;
+  const l = col.r * 0.2126 + col.g * 0.7152 + col.b * 0.0722; return col.multiplyScalar(Math.max(1, lum / Math.max(l, 0.02)));
+}
 const shotMats = {
-  rocketBody: lam('#F5F1E6'), rocketTip: lam('#E8553E'), bang: lam('#F2B134'), bangTip: lam('#23304A'),
-  bullet: new THREE.MeshBasicMaterial({ color: '#FFE16B' }), frost: new THREE.MeshBasicMaterial({ color: '#9FE8FF' }),
-  lob: lam('#2B2F3A'), band: lam('#E8553E'), mine: lam('#3A3F4D'), light: new THREE.MeshBasicMaterial({ color: '#FF3B2F' }),
+  rocketBody: lam('#F5F1E6', { roughness: 0.4, metalness: 0.2 }), rocketTip: lam('#E8553E', { emissive: hdr('#FF5A2E', 1), emissiveIntensity: 1.8, roughness: 0.4 }),
+  bang: lam('#F2B134', { roughness: 0.4, metalness: 0.2 }), bangTip: lam('#23304A', { emissive: hdr('#FF7A2E', 1), emissiveIntensity: 1.2 }),
+  bullet: new THREE.MeshBasicMaterial({ color: hdr('#FFE16B', 2.4) }), frost: new THREE.MeshBasicMaterial({ color: hdr('#9FE8FF', 2.2) }),
+  lob: lam('#2B2F3A', { roughness: 0.5, metalness: 0.3 }), band: lam('#E8553E', { emissive: hdr('#FF5A2E', 1), emissiveIntensity: 0.9 }),
+  mine: lam('#3A3F4D', { roughness: 0.45, metalness: 0.4 }), light: new THREE.MeshBasicMaterial({ color: hdr('#FF3B2F', 2.8) }),
 };
 const G = {
   rocketBody: new THREE.CylinderGeometry(0.28, 0.28, 1.5, 10).rotateX(Math.PI / 2),
@@ -452,16 +1665,36 @@ function makeShotMesh(type, yaw) {
 }
 const fxList = [];
 const fxSphereGeo = new THREE.SphereGeometry(1, 16, 12), fxRingGeo = new THREE.RingGeometry(0.8, 1, 32), debrisGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+// Tyre smoke: camera-facing sprites with a soft, slightly lumpy alpha puff (tinted by the sprite
+// colour). smokeQuad spans -1..1, so a sprite's scale is its radius, the same as the old spheres.
+const smokeQuad = new THREE.PlaneGeometry(2, 2).deleteAttribute('normal');
+const smokeTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d');
+  const blob = (x, y, r, a) => {
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, `rgba(255,255,255,${a})`); gr.addColorStop(0.5, `rgba(255,255,255,${a * 0.75})`);
+    gr.addColorStop(0.8, `rgba(255,255,255,${a * 0.3})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  };
+  blob(64, 64, 62, 1);
+  for (const [x, y, r] of [[46, 52, 30], [80, 50, 28], [58, 80, 30], [84, 78, 24]]) blob(x, y, r, 0.35);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
 function boomFx(x, z, radius, color = '#FF9A3C') {
-  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .9, depthWrite: false }));
+  // fireball shell: saturated orange below the bloom threshold (green/blue pulled down so ACES keeps it fiery)
+  const shell = hdr(color, 0.5, 1); shell.g *= 0.75; shell.b *= 0.4;
+  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: shell, transparent: true, opacity: .9, depthWrite: false }));
   s.position.set(x, 1, z); s.renderOrder = 2; scene.add(s);
+  // hot core (lum ~2.7, above the threshold) gives the bloom; it grows with the shell and is gone by mid-life
+  const core = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: shell.clone().multiplyScalar(6), transparent: true, depthWrite: false }));
+  core.scale.setScalar(0.45); core.renderOrder = 3; s.add(core);
   fxList.push({ m: s, t: 0, dur: 0.45, kind: 'grow', r: radius });
-  const ring = new THREE.Mesh(fxRingGeo, new THREE.MeshBasicMaterial({ color: '#FFF4DC', transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
+  const ring = new THREE.Mesh(fxRingGeo, new THREE.MeshBasicMaterial({ color: hdr('#FFE2B0', 2.0), transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
   ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.2, z); ring.renderOrder = 2; scene.add(ring);
   fxList.push({ m: ring, t: 0, dur: 0.5, kind: 'grow', r: radius * 1.3 });
   const n = Math.min(14, 5 + Math.round(radius));
   for (let i = 0; i < n; i++) {
-    const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : color, transparent: true }));
+    const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : shell, transparent: true }));
     d.position.set(x, 1, z); scene.add(d);
     const a = Math.random() * TAU, sp = rand(6, 14);
     fxList.push({ m: d, t: 0, dur: rand(.6, 1), kind: 'debris', vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(6, 14) });
@@ -469,12 +1702,24 @@ function boomFx(x, z, radius, color = '#FF9A3C') {
   if (me && started) { const dd = Math.hypot(x - me.x, z - me.z); if (dd < radius + 14 && !reduceMotion) shake = Math.max(shake, clamp(1 - dd / (radius + 14), 0, 1) * 0.9); }
 }
 function puffFx(x, z, color, size = 1.2) {
-  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .8, depthWrite: false }));
+  const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: hdr(color, 2.0), transparent: true, opacity: .8, depthWrite: false }));
   s.position.set(x, 1.2, z); s.renderOrder = 2; scene.add(s); fxList.push({ m: s, t: 0, dur: 0.3, kind: 'grow', r: size });
 }
 // drift: skid marks (one instanced mesh used as a ring buffer) and tyre smoke
+// Skid alpha: soft long edges, and both ends ramp over ~8% of the quad (about the 0.05 overlap
+// between consecutive quads), so joints are not drawn twice at full opacity (no dark notches).
+const skidTex = (() => {
+  const W = 16, H = 128, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'), img = g.createImageData(W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const v = (y + 0.5) / H, u = (x + 0.5) / W, i = (y * W + x) * 4;
+    const a = Math.min(1, v / 0.08, (1 - v) / 0.08) * Math.min(1, u / 0.25, (1 - u) / 0.25);
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = 255; img.data[i + 3] = Math.round(255 * a);
+  }
+  g.putImageData(img, 0, 0); return new THREE.CanvasTexture(c);
+})();
 const skidMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
-  new THREE.MeshBasicMaterial({ color: '#15181F', transparent: true, opacity: 0.5, depthWrite: false }), DRIVE.SKID_MAX);
+  new THREE.MeshBasicMaterial({ color: '#15181F', map: skidTex, transparent: true, opacity: 0.5, depthWrite: false }), DRIVE.SKID_MAX);
 skidMesh.frustumCulled = false; skidMesh.renderOrder = 1; scene.add(skidMesh);
 let skidNext = 0;
 const skidM = new THREE.Matrix4(), skidQ = new THREE.Quaternion(), skidP = new THREE.Vector3(), skidS = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
@@ -501,7 +1746,8 @@ function driftFx(v, drifting, x, z, bodyYaw, dt) {
   if (v.smokeT <= 0) {
     v.smokeT = DRIVE.SMOKE_EVERY;
     for (const [wx, wz] of wheels) {
-      const m = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: '#E9E6E0', transparent: true, opacity: 0.45, depthWrite: false }));
+      const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, color: '#D9D6D0', transparent: true, opacity: 0.45, depthWrite: false, rotation: rand(0, TAU) })); // stays below the bloom threshold
+      m.geometry = smokeQuad; m.frustumCulled = false;
       m.position.set(wx + rand(-0.2, 0.2), 0.5, wz + rand(-0.2, 0.2)); m.renderOrder = 2; scene.add(m); // drawn over skid marks
       fxList.push({ m, t: 0, dur: rand(0.45, 0.7), kind: 'smoke', r: rand(1.1, 1.6) });
     }
@@ -510,8 +1756,11 @@ function driftFx(v, drifting, x, z, bodyYaw, dt) {
 function updateFx(dt) {
   for (let i = fxList.length - 1; i >= 0; i--) {
     const f = fxList[i]; f.t += dt; const k = f.t / f.dur;
-    if (k >= 1) { scene.remove(f.m); f.m.material.dispose(); fxList.splice(i, 1); continue; }
-    if (f.kind === 'grow') { f.m.scale.setScalar(0.2 + f.r * (1 - Math.pow(1 - k, 3))); f.m.material.opacity = (1 - k) * 0.9; }
+    if (k >= 1) { scene.remove(f.m); f.m.material.dispose(); for (const c of f.m.children) c.material.dispose(); fxList.splice(i, 1); continue; }
+    if (f.kind === 'grow') {
+      f.m.scale.setScalar(0.2 + f.r * (1 - Math.pow(1 - k, 3))); f.m.material.opacity = (1 - k) * 0.9;
+      if (f.m.children.length) f.m.children[0].material.opacity = Math.max(0, 1 - 2 * k); // boomFx hot core
+    }
     else if (f.kind === 'smoke') { f.m.scale.setScalar(0.35 + f.r * k); f.m.position.y += dt * 1.6; f.m.material.opacity = (1 - k) * 0.45; }
     else { f.vy -= 30 * dt; f.m.position.x += f.vx * dt; f.m.position.y = Math.max(0.25, f.m.position.y + f.vy * dt); f.m.position.z += f.vz * dt; f.m.rotation.x += dt * 8; f.m.material.opacity = 1 - k; }
   }
@@ -975,7 +2224,7 @@ function syncRemotes(dt, now) {
     R.p = p; R.at = at;
     if (name !== R.name) { R.name = name; setTag(R.view, name); }
     const ci = clamp(p.c | 0, 0, COLORS.length - 1);
-    if (ci !== R.ci) { R.ci = ci; R.view.bodyMat.color.set(COLORS[ci]); }
+    if (ci !== R.ci) { R.ci = ci; recolorKart(R.view, COLORS[ci]); }
     // deaths
     if (p.rd === curRd) {
       if (R.lastRd === curRd && R.lastD != null && p.d > R.lastD) {
@@ -1048,66 +2297,125 @@ function standings() {
 }
 
 /* ---------- HUD ---------- */
+// Icons are inline SVG (24x24, drawn in currentColor), so they look the same on every device.
+const svgIcon = body => `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+const WEAPON_ICONS = {
+  rocket: svgIcon('<g transform="rotate(45 12 12)"><path d="M12 2.5c2.8 2 4.3 5.2 4.3 9V16H7.7v-4.5c0-3.8 1.5-7 4.3-9z"/><circle cx="12" cy="9.3" r="1.6"/><path d="M7.7 12.5 5 15.2v3.3l2.7-1.4M16.3 12.5l2.7 2.7v3.3l-2.7-1.4M10.2 19.2 12 22l1.8-2.8"/></g>'),
+  minigun: svgIcon('<path d="M2.5 8.5h11M2.5 12h11M2.5 15.5h11"/><rect x="13.5" y="6" width="7" height="12" rx="2"/><path d="M17 18v3"/>'),
+  mines: svgIcon('<path d="M3 19h18"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/><path d="M12 12.5V9.8"/><circle cx="12" cy="7.4" r="1.5" fill="currentColor" stroke="none"/><path d="M8 5.8 6.8 4.6M16 5.8l1.2-1.2"/>'),
+  lob: svgIcon('<circle cx="10.5" cy="14" r="6.5"/><path d="M15.2 9.3l2.2-2.2"/><path d="M19.2 3.4v1.6M22 6.4h-1.6M21.2 4.2l-1.1 1.1"/><path d="M7.4 13.2a3.3 3.3 0 0 1 2.4-2.6"/>'),
+  frost: svgIcon('<path stroke-width="1.8" d="M12 2.5v19M3.77 7.25l16.46 9.5M3.77 16.75l16.46-9.5M9.4 3.5 12 5.7l2.6-2.2M9.4 20.5 12 18.3l2.6 2.2M18.06 5.5l-.6 3.35 3.2 1.15M20.66 14l-3.2 1.15.6 3.35M5.94 18.5l.6-3.35-3.2-1.15M3.34 10l3.2-1.15-.6-3.35"/>'),
+  spikes: svgIcon('<polygon stroke-width="1.8" points="12 2 14.53 5.9 19.07 4.93 18.1 9.47 22 12 18.1 14.53 19.07 19.07 14.53 18.1 12 22 9.47 18.1 4.93 19.07 5.9 14.53 2 12 5.9 9.47 4.93 4.93 9.47 5.9"/><circle cx="12" cy="12" r="2.8"/>'),
+  star: svgIcon('<polygon points="12 3.2 14.53 9.32 21.13 9.83 16.09 14.13 17.64 20.57 12 17.1 6.36 20.57 7.91 14.13 2.87 9.83 9.47 9.32"/>'),
+  bigbang: svgIcon('<polygon stroke-width="1.8" points="12 1.8 13.8 5.86 17.51 3.42 16.84 7.81 21.28 7.76 18.33 11.09 22.1 13.45 17.82 14.66 19.71 18.68 15.46 17.38 14.87 21.79 12 18.4 9.13 21.79 8.54 17.38 4.29 18.68 6.18 14.66 1.9 13.45 5.67 11.09 2.72 7.76 7.16 7.81 6.49 3.42 10.2 5.86"/><circle cx="12" cy="12.2" r="2.6" fill="currentColor" stroke="none"/>'),
+};
+const UI_ICONS = {
+  empty: svgIcon('<rect x="3.5" y="3.5" width="17" height="17" rx="3" stroke-width="1.6" stroke-dasharray="3.2 2.6"/><path d="M9.7 9.7a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.4v.5"/><circle cx="12" cy="16.6" r=".5"/>'),
+  settings: svgIcon('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
+  close: svgIcon('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
+  fire: svgIcon('<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="1.8"/><path d="M12 1.8v4M12 18.2v4M1.8 12h4M18.2 12h4"/>'),
+};
+const hudEl = {
+  hud: $('#hud'), timer: $('#timer'), riA: $('#roominfo .ri-a'), riB: $('#roominfo .ri-b'), board: $('#board'), feed: $('#feed'),
+  slot: $('#slot'), glyph: $('#slotGlyph'), count: $('#slotCount'), slotName: $('#slotName'), slotSub: $('#slotSub'),
+  center: $('#center'), big: $('#bigmsg'), sub: $('#submsg'), toast: $('#toast'), fireIcon: $('#fireIcon'), fire: $('#fireBtn'),
+  results: $('#results'), winLine: $('#winLine'), winSub: $('#winSub'), standings: $('#standings'), next: $('#next'), nextBar: $('#nextBar'),
+};
+hudEl.glyph.innerHTML = UI_ICONS.empty; hudEl.fireIcon.innerHTML = UI_ICONS.fire;
+const setText = (el, s) => { if (el.textContent !== s) el.textContent = s; };
 const feed = [];
 function pushFeed(a, b, mine, verb) {
   const text = verb ? `${a} ${verb}` : `${a} smashed ${b}`;
-  feed.push({ text, mine, until: Date.now() + 4500 }); if (feed.length > 4) feed.shift(); feedDirty = true;
+  // names come from other players: always set as text, never as HTML
+  const el = document.createElement('div'); el.className = 'panel' + (mine ? ' mine' : '') + (verb ? ' sys' : '');
+  const A = document.createElement('b'); A.textContent = a;
+  if (verb) el.append(A, ' ' + verb);
+  else { const B = document.createElement('b'); B.textContent = b; el.append(A, ' smashed ', B); }
+  feed.push({ text, mine, until: Date.now() + 4500, el }); hudEl.feed.append(el);
+  if (feed.length > 4) feed.shift().el.remove();
 }
-let feedDirty = true, toastTimer = 0;
-function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 1400); }
-function flashSlot() { const s = $('#slot'); s.classList.remove('flash'); void s.offsetWidth; s.classList.add('flash'); sfx('pick'); }
+// toast(text, ms, hold): a held toast (the quality notice) is not replaced by ordinary toasts while it shows
+let toastTimer = 0, toastHoldUntil = 0;
+function toast(t, ms = 1400, hold = false) {
+  const now = performance.now(); if (!hold && now < toastHoldUntil) return;
+  const el = hudEl.toast; el.textContent = t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), ms);
+  toastHoldUntil = hold ? now + ms : 0;
+}
+function flashSlot() { const s = hudEl.slot; s.classList.remove('flash'); void s.offsetWidth; s.classList.add('flash'); sfx('pick'); }
 function renderList(el, rows, cls) {
+  let sig = cls; for (const e of rows) sig += `|${e.rank}:${e.key}:${e.score}:${e.name}:${e.color}:${e.me ? 1 : 0}`;
+  if (el._sig === sig) return; el._sig = sig; // only touch the DOM when something changed
   el.replaceChildren(...rows.map((e, i) => {
     const li = document.createElement('li'); if (e.me) li.className = 'me';
-    const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = i + 1;
+    const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = e.rank || i + 1;
     const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = e.color;
-    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = e.me ? e.name + ' (you)' : e.name;
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = e.name;
     const sc = document.createElement('span'); sc.className = 'sc'; sc.textContent = e.score;
-    if (cls === 'board') li.append(rk, dot, nm, sc); else li.append(dot, nm, sc);
+    li.append(rk, dot, nm);
+    if (e.me) { const you = document.createElement('span'); you.className = 'you'; you.textContent = 'You'; li.append(you); }
+    li.append(sc);
     return li;
   }));
 }
-let hudAt = 0, lastSlot = '';
+let hudAt = 0, lastSlot = '', centerCls = '', lastSnd = null;
 function updateHud(now, playing, phaseT) {
-  if (now - hudAt < 150) return; hudAt = now;
-  const st = standings();
+  if (now - hudAt < 150 && now >= hudAt) return; hudAt = now; // (also recovers if the clock jumps back)
+  const H = hudEl, st = standings();
+  st.forEach((e, i) => { e.rank = i + 1; });
   // timer
-  const t = $('#timer');
-  if (playing) { const rem = Math.ceil((ROUND_MS - phaseT) / 1000); t.textContent = `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`; t.classList.toggle('low', rem <= 15); }
-  else { t.textContent = '0:00'; }
-  const humans = remotes.size + 1;
-  $('#roominfo').textContent = Net.mode === 'solo' ? 'Solo practice' + (bots.length ? ' with bots' : '')
-    : `Room ${roomCode}: ${humans} ${humans === 1 ? 'driver' : 'drivers'}` + (Net.connected() ? '' : ' (reconnecting)');
-  // board: top 6 plus me
-  const cap = innerWidth < 640 ? 4 : 6;
+  if (playing) { const rem = Math.ceil((ROUND_MS - phaseT) / 1000); setText(H.timer, `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`); H.timer.classList.toggle('low', rem <= 15); }
+  else { setText(H.timer, '0:00'); }
+  // room info
+  const humans = remotes.size + 1, online = Net.mode !== 'solo', reconnecting = online && !Net.connected();
+  setText(H.riA, online ? `Room ${roomCode}` : 'Solo practice');
+  setText(H.riB, online ? `${humans} ${humans === 1 ? 'driver' : 'drivers'}` + (reconnecting ? ' (reconnecting)' : '') : (bots.length ? 'with bots' : ''));
+  H.riB.classList.toggle('warn', reconnecting); H.riB.hidden = !H.riB.textContent;
+  // board: top 6 plus me (top 4 on small screens)
+  const cap = innerWidth < 640 ? 4 : 6; // (short landscape screens have room for 6: the board runs down the right side)
   let rows = st.slice(0, cap); if (!rows.some(e => e.me)) { const m = st.find(e => e.me); if (m) rows = rows.slice(0, cap - 1).concat(m); }
-  renderList($('#board'), rows, 'board');
+  renderList(H.board, rows, 'board');
   // feed
-  for (let i = feed.length - 1; i >= 0; i--) if (feed[i].until < now) { feed.splice(i, 1); feedDirty = true; }
-  if (feedDirty) { feedDirty = false; $('#feed').replaceChildren(...feed.map(f => { const d = document.createElement('div'); d.textContent = f.text; if (f.mine) d.className = 'mine'; return d; })); }
-  // weapon slot
+  for (let i = feed.length - 1; i >= 0; i--) if (feed[i].until < now) { feed[i].el.remove(); feed.splice(i, 1); }
+  // weapon slot (and the icon on the touch Fire button)
   const slotKey = me.weapon ? me.weapon + me.charges : 'none';
   if (slotKey !== lastSlot) {
-    lastSlot = slotKey; const s = $('#slot');
-    if (me.weapon) { const w = WEAPONS[me.weapon]; s.classList.remove('empty'); $('#slotIcon').textContent = w.icon; $('#slotName').textContent = w.label; $('#slotSub').textContent = me.charges > 1 ? `${me.charges} left, ${w.sub.toLowerCase()}` : w.sub; }
-    else { s.classList.add('empty'); $('#slotIcon').textContent = '?'; $('#slotName').textContent = 'Empty'; $('#slotSub').textContent = 'Drive through a ? box'; }
+    lastSlot = slotKey;
+    if (me.weapon) {
+      const w = WEAPONS[me.weapon], icon = WEAPON_ICONS[me.weapon] || UI_ICONS.fire;
+      H.slot.classList.remove('empty'); H.glyph.innerHTML = icon; H.count.textContent = me.charges > 1 ? me.charges : '';
+      H.slotName.textContent = w.label; H.slotSub.textContent = me.charges > 1 ? `${me.charges} left, ${w.sub.toLowerCase()}` : w.sub;
+      H.fireIcon.innerHTML = icon; H.fire.classList.remove('dim');
+    } else {
+      H.slot.classList.add('empty'); H.glyph.innerHTML = UI_ICONS.empty; H.count.textContent = '';
+      H.slotName.textContent = 'Empty'; H.slotSub.textContent = 'Drive through a ? box';
+      H.fireIcon.innerHTML = UI_ICONS.fire; H.fire.classList.add('dim');
+    }
   }
   // centre message
-  let big = '', sub = '';
-  if (playing && !me.alive) { big = me.lk && me.lk !== me.key ? 'Smashed by ' + nameOf(me.lk) : 'Smashed'; sub = 'Back in ' + Math.max(1, Math.ceil((RESPAWN_MS - (now - me.deadAt)) / 1000)); }
-  else if (playing && now < me.frozenUntil) { big = 'Frozen!'; sub = 'Anyone who bumps you scores'; }
-  else if (playing && phaseT < 3000) { big = 'Go!'; }
-  $('#bigmsg').textContent = big; $('#submsg').textContent = sub;
+  let big = '', sub = '', kind = '';
+  if (playing && !me.alive) { big = me.lk && me.lk !== me.key ? 'Smashed by ' + nameOf(me.lk) : 'Smashed'; sub = 'Back in ' + Math.max(1, Math.ceil((RESPAWN_MS - (now - me.deadAt)) / 1000)); kind = 'dead'; }
+  else if (playing && now < me.frozenUntil) { big = 'Frozen!'; sub = 'Anyone who bumps you scores'; kind = 'frozen'; }
+  else if (playing && phaseT < 3000) { big = 'Go!'; kind = 'go'; }
+  if (big) { setText(H.big, big); setText(H.sub, sub); } // keep the old text while it fades out
+  const cls = big ? 'panel on ' + kind : centerCls.replace(' on', '');
+  if (cls !== centerCls) { centerCls = cls; H.center.className = cls || 'panel'; }
+  // sound toggle in the settings panel mirrors the M key
+  if (muted !== lastSnd) { lastSnd = muted; for (const b of document.querySelectorAll('#sndSeg [data-snd]')) b.setAttribute('aria-pressed', String((b.dataset.snd === 'off') === muted)); }
   // results
-  const res = $('#results');
   if (!playing) {
-    res.hidden = false;
+    H.results.hidden = false; H.hud.classList.add('over');
     const top = st[0];
-    $('#winLine').textContent = top && top.score > 0 ? (top.me ? `You won with ${top.score} smashes.` : `${top.name} won with ${top.score} ${top.score === 1 ? 'smash' : 'smashes'}.`) : 'Nobody scored this round.';
-    renderList($('#standings'), st.slice(0, 8), 'standings');
-    $('#next').textContent = `Next round starts in ${Math.ceil((PERIOD - phaseT) / 1000)}s`;
-  } else res.hidden = true;
+    if (top && top.score > 0) {
+      setText(H.winLine, top.me ? 'You win!' : `${top.name} wins`);
+      setText(H.winSub, top.me ? `You won with ${top.score} ${top.score === 1 ? 'smash' : 'smashes'}.` : `${top.name} won with ${top.score} ${top.score === 1 ? 'smash' : 'smashes'}.`);
+    } else { setText(H.winLine, 'No winner'); setText(H.winSub, 'Nobody scored this round.'); }
+    renderList(H.standings, st.slice(0, 8), 'standings');
+    setText(H.next, `Next round starts in ${Math.ceil((PERIOD - phaseT) / 1000)}s`);
+    H.nextBar.style.transform = `scaleX(${clamp((PERIOD - phaseT) / BREAK_MS, 0, 1).toFixed(3)})`;
+  } else if (!H.results.hidden) { H.results.hidden = true; H.hud.classList.remove('over'); }
 }
+// debug handle for UI tests (only with ?debug in the URL)
+if (/[?&]debug(?:[=&]|$)/.test(location.search)) window.SKUI = { pushFeed, toast, flashSlot, WEAPON_ICONS, UI_ICONS };
 
 /* ---------- input ---------- */
 const keys = new Set(); let firePressed = false, fireHeld = false;
@@ -1148,8 +2456,42 @@ COLORS.forEach((c, i) => {
   sw.appendChild(b);
 });
 try { const saved = JSON.parse(localStorage.getItem('scrapkarts') || '{}'); if (saved.name) $('#nameIn').value = saved.name; if (saved.room) $('#roomIn').value = saved.room; if (Number.isInteger(saved.color)) sw.children[saved.color]?.click(); } catch (e) {}
+// Graphics quality: Low/High in the menu and in the in-game settings panel (setQuality/onQuality: render pipeline).
+const qBtns = [...document.querySelectorAll('.qseg [data-q]')];
+for (const b of qBtns) b.addEventListener('click', () => { setQuality(b.dataset.q); if (started) canvas.focus(); });
+// An automatic drop to Low is remembered for 7 days (setQuality stores the hint); any manual choice wins and clears it.
+let qRestored = false;
+try {
+  if (!localStorage.getItem('scrapkarts.quality')) {
+    const at = +localStorage.getItem('scrapkarts.quality.auto') || 0;
+    if (at && Date.now() - at < 7 * 864e5) { if (QUALITY.level === 'high') { qRestored = true; setQuality('low', true); } }
+    else localStorage.removeItem('scrapkarts.quality.auto');
+  }
+} catch (e) {}
+onQuality((level, auto) => {
+  document.documentElement.dataset.q = level; // CSS drops the panel blur on Low
+  for (const b of qBtns) b.setAttribute('aria-pressed', String(b.dataset.q === level));
+  const isAuto = QUALITY.auto && level === 'low';
+  const note = !isAuto ? '' : qRestored && !auto ? 'Low was chosen automatically on your last visit. Pick High to try again.' : 'Switched to Low automatically for smoother play.';
+  $('#qNote').textContent = note; $('#qNote2').textContent = note && 'Low was chosen automatically.';
+  if (auto && level === 'low' && !qRestored) toast('Switched to Low quality for smoother play', 4000, true);
+  if (!isAuto) qRestored = false;
+});
+// In-game settings: a small button next to the clock opens a compact panel (quality + sound).
+const setBtn = $('#setBtn'), setPanel = $('#setPanel');
+function showSettings(open) {
+  setPanel.hidden = !open; setBtn.setAttribute('aria-expanded', String(open)); $('#tl').classList.toggle('setopen', open);
+  setBtn.setAttribute('aria-label', open ? 'Close settings' : 'Settings'); setBtn.innerHTML = open ? UI_ICONS.close : UI_ICONS.settings;
+}
+showSettings(false);
+setBtn.addEventListener('click', () => { showSettings(setPanel.hidden); canvas.focus(); });
+addEventListener('keydown', e => { if (e.code === 'Escape' && !setPanel.hidden) showSettings(false); });
+for (const b of document.querySelectorAll('#sndSeg [data-snd]')) b.addEventListener('click', () => {
+  const m = b.dataset.snd === 'off'; if (m !== muted) { muted = m; toast(muted ? 'Sound off' : 'Sound on'); } // same as the M key
+  canvas.focus();
+});
 $('#play').addEventListener('click', async () => {
-  const btn = $('#play'); btn.disabled = true; btn.textContent = 'Connecting…';
+  const btn = $('#play'); btn.disabled = true; btn.textContent = 'Connecting…'; btn.classList.add('busy');
   initAudio();
   const name = ($('#nameIn').value || '').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').trim().slice(0, 14) || 'Driver';
   roomCode = ($('#roomIn').value || 'arena').toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20) || 'arena';
@@ -1161,6 +2503,7 @@ $('#play').addEventListener('click', async () => {
   if (!ok) { Net.mode = 'solo'; Net.myKey = 'you'; }
   if (!botsEnabled) removeBots();
   for (const b of bots) { b.kb = {}; b.d = 0; }
+  await kartModelReady(COLORS[myColor], 2500); // brief, bounded wait so your own kart doesn't change model a few seconds in
   me = makeKartState(Net.myKey, name, myColor, false);
   me.view = buildKart(COLORS[myColor]); scene.add(me.view.g);
   respawn(me); started = true;
@@ -1170,6 +2513,13 @@ $('#play').addEventListener('click', async () => {
   canvas.focus();
   if (!ok && (roomNs || wsPossible)) toast('Could not reach the room, playing solo');
 });
+// Play is disabled ("Loading…") in the markup; enable it once the first frame has rendered, so the one-off
+// shader-compile stall happens while the menu still says it is loading. (window.__skReady stops the watchdog.)
+(function enablePlayWhenDrawn() {
+  if (!(renderer.info.render.frame > 0)) { requestAnimationFrame(enablePlayWhenDrawn); return; }
+  const btn = $('#play'); btn.disabled = false; btn.classList.remove('busy'); btn.textContent = 'Play';
+  window.__skReady = true; $('#loadnote').hidden = true;
+})();
 
 /* ---------- main loop ---------- */
 let last = performance.now(), sendAt = 0, cleanAt = 0, t0 = performance.now();
@@ -1254,9 +2604,32 @@ function frame(t) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (t - last) / 1000); last = t;
   update(dt);
-  renderer.render(scene, camera);
+  renderFrame();
 }
-requestAnimationFrame(frame);
+// Test/debug handle, only with ?debug in the URL (module scope hides everything else).
+if (/[?&]debug(?:[=&]|$)/.test(location.search)) {
+  window.SK = {
+    THREE, scene, camera, renderer, DRIVE, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence,
+    get me() { return me; }, get bots() { return bots; }, get remotes() { return remotes; }, get Net() { return Net; },
+    get started() { return started; }, get curRd() { return curRd; }, get fxList() { return fxList; }, get boxes() { return boxes; },
+    get physics() { return physics; }, get skidNext() { return skidNext; },
+  };
+}
+// Shader warm-up: compile the scene's programs and the enabled post passes' full-screen shaders in
+// parallel (KHR_parallel_shader_compile) before the first frame, instead of linking them
+// synchronously inside it. Compiled against the composer's HalfFloat target, because that is where
+// RenderPass and the passes draw (no tone mapping, linear output); to-screen variants would be
+// rebuilt on the first frame. Disabled passes (GTAO on Low) are skipped; OutputPass sets its
+// defines on its first render, so it is left to that frame.
+{
+  const warmScene = new THREE.Scene(), quad = new THREE.PlaneGeometry(2, 2).deleteAttribute('normal'); // like FullScreenQuad: position + uv
+  for (const p of composer.passes) if (p.enabled && p !== outputPass) for (const v of Object.values(p))
+    for (const m of [].concat(v)) if (m && m.isShaderMaterial && !m.isRawShaderMaterial) warmScene.add(new THREE.Mesh(quad, m));
+  renderer.setRenderTarget(composer.renderTarget1);
+  const warm = Promise.all([renderer.compileAsync(scene, camera), renderer.compileAsync(warmScene, camera)]);
+  renderer.setRenderTarget(null);
+  warm.catch(() => {}).finally(() => { quad.dispose(); requestAnimationFrame(frame); });
+}
 </script>
 </body>
 </html>

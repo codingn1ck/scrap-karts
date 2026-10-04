@@ -26,7 +26,17 @@ The host sets the `PORT` environment variable; the server picks it up automatica
 
 ## How it works
 
-`index.html` is the whole game. `server.js` only serves that page and relays each player's state to the others in the same room (max 12 per room). Every player's browser is the authority for its own kart: it decides when it has been hit and tells everyone. That keeps the server tiny, but it also means a player could cheat by editing their page. Fine for friends, not for strangers.
+`index.html` is the whole game. It loads three.js (r186) as ES modules from cdn.jsdelivr.net, so players need an internet connection even when the server runs on your own network. `server.js` serves that page and the 3D models in `assets/`, and relays each player's state to the others in the same room (max 12 per room). Every player's browser is the authority for its own kart: it decides when it has been hit and tells everyone. That keeps the server tiny, but it also means a player could cheat by editing their page. Fine for friends, not for strangers.
+
+Opening `index.html` straight from disk still works for solo play with bots, but browsers block loading the models from `file://`, so you get the built-in fallback karts and scenery.
+
+## Graphics
+
+The menu and the in-game settings panel have a Low/High quality switch. High adds ambient occlusion, sharper shadows and a higher render resolution; if the frame rate stays under 45 fps on High, the game drops to Low by itself and says so. The choice is remembered per browser.
+
+The karts and track props are from Kenney's [Car Kit](https://kenney.nl/assets/car-kit) and [Racing Kit](https://kenney.nl/assets/racing-kit) (CC0, licence files in `assets/car-kit/` and `assets/racing-kit/`). Containers, crates, tyre stacks, the arena and the fallback kart are built in code.
+
+Add `?debug` to the URL to expose the game state as `window.SK` in the browser console (used by the automated browser tests).
 
 ## Tuning
 
