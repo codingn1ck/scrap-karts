@@ -1931,8 +1931,20 @@ function nameOf(key) {
 }
 
 /* ---------- physics ---------- */
-// Ground height at a point (TERRAIN plateaus and ramps; flat ground is 0). Implemented with the terrain work.
-function groundY(x, z) { return 0; }
+// Ground height at a point: the highest TERRAIN entry containing it, else flat ground (0). Pits are entries with y < 0.
+function groundY(x, z) {
+  let h = 0, found = false;
+  for (const t of TERRAIN) {
+    if (Math.abs(x - t.x) > t.w / 2 || Math.abs(z - t.z) > t.d / 2) continue;
+    let y = t.y;
+    if (t.dir) { // ramp: 0 at the low end, 1 at the high end
+      const f = t.dir === 'x' ? (x - (t.x - t.w / 2)) / t.w : t.dir === '-x' ? (t.x + t.w / 2 - x) / t.w : t.dir === 'z' ? (z - (t.z - t.d / 2)) / t.d : (t.z + t.d / 2 - z) / t.d;
+      y = t.y0 + (t.y1 - t.y0) * clamp(f, 0, 1);
+    }
+    if (!found || y > h) { h = y; found = true; }
+  }
+  return h;
+}
 function solidAt(x, z, pad) {
   if (Math.abs(x) > WALL_IN - pad || Math.abs(z) > WALL_IN - pad) return true;
   for (const o of OBST) if (Math.abs(x - o.x) < o.w / 2 + pad && Math.abs(z - o.z) < o.d / 2 + pad) return true;
