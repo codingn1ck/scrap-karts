@@ -1,6 +1,8 @@
 # Scrap Karts
 
-Arena kart brawler: 3-minute rounds, one hit = one smash = one point, 3-second respawns, random weapons from ? boxes, bots when you're alone.
+Arena kart brawler: 3-minute rounds, 100 health per kart, every smash is a point, 3-second respawns, random weapons from ? boxes, bots when you're alone.
+
+The arena is 200 x 200 with a raised centre plateau, four corner hills, two sunken bowls and two walkways, all joined by ramps; karts drive up ramps, fall off edges and can't climb walls. Eleven weapons: rockets, bullets, a homing machine gun, snowballs (freeze), cannon balls and the Lob-Grenuke (arc over cover), a nuke, mines, the Spiky-Go-Round and the Star (touch = smash), and a fake loot box that fools anyone who grabs it.
 
 ## Run it on your own computer
 
@@ -40,4 +42,4 @@ Add `?debug` to the URL to expose the game state as `window.SK` in the browser c
 
 ## Tuning
 
-The numbers you'd most likely want to change are at the top of the script in `index.html`: `ROUND_MS` (round length), `RESPAWN_MS`, `BOX_RESPAWN`, the `WEAPONS` table (charges and how often each drops), and `DEF` (projectile speed, blast radius). Kart handling numbers (speeds, grip, reverse ratio, drifting and the drift boost toggle) are all in the `DRIVE` object at the top of the script; the code that uses them is `drive()`. Kart driving runs at a fixed 60 Hz; projectiles, boxes and the HUD still update once per frame. `npm test` checks the driving model.
+The numbers you'd most likely want to change are at the top of the script in `index.html`: `ROUND_MS` (round length), `RESPAWN_MS`, `BOX_RESPAWN`, `WORLD` (health, gravity, how high a ledge a kart can drive up), the `WEAPONS` table (charges and how often each drops), `DEF` (each shot type's speed, damage, splash and arc), and the arena layout (`TERRAIN` for plateaus, pits and ramps; `OBST`, `BOX_SPOTS`, `SPAWNS`). `npm test` runs the driving, map and weapon checks (`test/*.test.js`). Kart handling numbers (speeds, grip, reverse ratio, drifting and the drift boost toggle) are all in the `DRIVE` object at the top of the script; the code that uses them is `drive()`. Kart driving runs at a fixed 60 Hz; projectiles, boxes and the HUD still update once per frame. `npm test` checks the driving model.
