@@ -1635,7 +1635,7 @@ function styleKart(v, s, t) {
   // s: {x,z,yaw,alive,spikes,star,frozen,protect,sp}
   v.g.visible = s.alive;
   if (!s.alive) return;
-  v.g.position.set(s.x, 0, s.z); v.g.rotation.y = s.yaw;
+  v.g.position.set(s.x, s.y || 0, s.z); v.g.rotation.y = s.yaw;
   if (v.swap) stepSwap(v);
   v.spikes.visible = s.spikes; if (s.spikes) v.spikes.rotation.y = t * 6;
   v.ice.visible = s.frozen;
@@ -1907,18 +1907,18 @@ function respawn(k) {
     let md = 1e9; for (const o of others) md = Math.min(md, Math.hypot(o.x - s[0], o.z - s[1]));
     md += Math.random() * 6; if (md > bd) { bd = md; best = s; }
   }
-  Object.assign(k, { x: best[0], z: best[1], yaw: Math.atan2(-best[0], -best[1]), hp: WORLD.HP_MAX, alive: true, protectUntil: now + PROTECT_MS,
+  Object.assign(k, { x: best[0], z: best[1], y: groundY(best[0], best[1]), yaw: Math.atan2(-best[0], -best[1]), hp: WORLD.HP_MAX, alive: true, protectUntil: now + PROTECT_MS,
     spikeUntil: 0, starUntil: 0, frozenUntil: 0, weapon: null, charges: 0 });
   resetDrive(k); // zero velocity/drift and snap interpolation so the kart doesn't streak across the map
 }
 function localKarts() { const a = started && me ? [me] : []; return bots.length ? a.concat(bots) : a; }
 function allKarts(now) {
   const out = [];
-  for (const k of localKarts()) out.push({ key: k.key, name: k.name, x: k.x, z: k.z, vx: k.vx, vz: k.vz, hp: k.hp, alive: k.alive, local: true, ref: k,
+  for (const k of localKarts()) out.push({ key: k.key, name: k.name, x: k.x, y: k.y, z: k.z, vx: k.vx, vz: k.vz, hp: k.hp, alive: k.alive, local: true, ref: k,
     spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil });
   for (const R of remotes.values()) {
     const p = R.p; const fx = String(p.fx || '');
-    out.push({ key: R.key, name: R.name, x: R.dx, z: R.dz, vx: +p.vx || 0, vz: +p.vz || 0, hp: p.hp == null ? WORLD.HP_MAX : clamp(+p.hp || 0, 0, WORLD.HP_MAX), alive: !!p.a && p.rd === curRd || (!!p.a && p.rd == null), local: false, ref: R,
+    out.push({ key: R.key, name: R.name, x: R.dx, y: R.dy, z: R.dz, vx: +p.vx || 0, vz: +p.vz || 0, hp: p.hp == null ? WORLD.HP_MAX : clamp(+p.hp || 0, 0, WORLD.HP_MAX), alive: !!p.a && p.rd === curRd || (!!p.a && p.rd == null), local: false, ref: R,
       spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u') });
   }
   return out;
@@ -1945,9 +1945,12 @@ function groundY(x, z) {
   }
   return h;
 }
-function solidAt(x, z, pad) {
+// Is (x, z) inside a wall or obstacle (grown by pad)? With a height y, ground more than 0.3 above y
+// counts too, so shots stop at plateau sides and bots treat ledges as walls. y undefined = ignore terrain.
+function solidAt(x, z, pad, y) {
   if (Math.abs(x) > WALL_IN - pad || Math.abs(z) > WALL_IN - pad) return true;
   for (const o of OBST) if (Math.abs(x - o.x) < o.w / 2 + pad && Math.abs(z - o.z) < o.d / 2 + pad) return true;
+  if (y !== undefined && groundY(x, z) > y + 0.3) return true;
   return false;
 }
 function collideWorld(k) {
@@ -1967,13 +1970,37 @@ function collideWorld(k) {
     k.x += nx * push; k.z += nz * push;
     const vn = k.vx * nx + k.vz * nz; if (vn < 0) { k.vx -= nx * vn * 1.3; k.vz -= nz * vn * 1.3; }
   }
+  collideLedges(k);
 }
-// Per-kart driving state; spread into every kart object.
+// Ledges: ground more than WORLD.STEP_UP above the kart is a wall. Undo this step's move one axis at a
+// time (k.px / k.pz hold the position before the step, saved by savePrev) so a kart sliding along a
+// plateau side keeps the free axis, and bounce the blocked axis like an obstacle hit. Ramps rise only a
+// fraction of STEP_UP per step, so they stay drivable at full speed in both directions.
+function collideLedges(k) {
+  const top = (k.y || 0) + WORLD.STEP_UP;
+  if (groundY(k.x, k.z) <= top) return;
+  if (groundY(k.px, k.z) <= top) { k.x = k.px; k.vx *= -0.3; }
+  else if (groundY(k.x, k.pz) <= top) { k.z = k.pz; k.vz *= -0.3; }
+  else { k.x = k.px; k.z = k.pz; k.vx *= -0.3; k.vz *= -0.3; }
+}
+// Height update after the x/z move: on the ground the kart follows it (up ramps, over curbs and down
+// slopes that drop less than STEP_UP in one step); otherwise it is in the air and gravity pulls it down
+// until it lands. Driving off a ledge is therefore a fall, not a snap.
+function settleHeight(k, dt) {
+  const g = groundY(k.x, k.z);
+  if (k.y <= g + 0.02 || (k.vy === 0 && k.y - g <= WORLD.STEP_UP)) { k.y = g; k.vy = 0; return; }
+  k.vy -= WORLD.GRAVITY * dt;
+  k.y += k.vy * dt;
+  if (k.y <= g) { k.y = g; k.vy = 0; }
+}
+// Per-kart driving state; spread into every kart object. y is height above flat ground, py the height
+// before the last step (for interpolation), vy the fall speed while airborne.
 function driveState() {
-  return { vx: 0, vz: 0, sp: 0, drift: 0, driftT: 0, steerDir: 0, steerHold: 0, boostT: 0, lean: 0, px: 0, pz: 0, pyaw: 0, plean: 0 };
+  return { vx: 0, vz: 0, vy: 0, y: 0, py: 0, sp: 0, drift: 0, driftT: 0, steerDir: 0, steerHold: 0, boostT: 0, lean: 0, px: 0, pz: 0, pyaw: 0, plean: 0 };
 }
 function resetDrive(k) {
-  Object.assign(k, driveState(), { px: k.x, pz: k.z, pyaw: k.yaw });
+  const y = k.y || 0;
+  Object.assign(k, driveState(), { y, py: y, px: k.x, pz: k.z, pyaw: k.yaw });
 }
 const boostExtra = k => k.boostT > 0 ? DRIVE.DRIFT_BOOST_SPEED * Math.min(1, k.boostT / DRIVE.DRIFT_BOOST_FADE) : 0;
 // One fixed physics step for one kart. dt is always DRIVE.STEP in the game.
@@ -2027,6 +2054,7 @@ function drive(k, thr, steer, dt, now) {
   k.boostT = Math.max(0, k.boostT - dt);
   k.x += k.vx * dt; k.z += k.vz * dt; k.sp = sp;
   collideWorld(k);
+  settleHeight(k, dt);
 }
 // Fixed-timestep driver: feed it real frame times, it calls step(DRIVE.STEP) a whole
 // number of times and leaves alpha (0..1) for interpolating between the last two states.
@@ -2041,18 +2069,21 @@ function makeFixedLoop(step) {
   return L;
 }
 // Remember the state before a step, so rendering can blend previous -> current.
-function savePrev(k) { k.px = k.x; k.pz = k.z; k.pyaw = k.yaw; k.plean = k.lean; }
+function savePrev(k) { k.px = k.x; k.pz = k.z; k.py = k.y; k.pyaw = k.yaw; k.plean = k.lean; }
 function renderPose(k, a) {
-  return { x: k.px + (k.x - k.px) * a, z: k.pz + (k.z - k.pz) * a, yaw: wrap(k.pyaw + wrap(k.yaw - k.pyaw) * a), lean: k.plean + (k.lean - k.plean) * a };
+  return { x: k.px + (k.x - k.px) * a, y: k.py + (k.y - k.py) * a, z: k.pz + (k.z - k.pz) * a, yaw: wrap(k.pyaw + wrap(k.yaw - k.pyaw) * a), lean: k.plean + (k.lean - k.plean) * a };
 }
 function pushApart(k, karts) {
   if (!k.alive) return;
   for (const o of karts) {
     if (o.key === k.key || !o.alive) continue;
+    if (Math.abs((o.y || 0) - (k.y || 0)) > 2.2) continue; // one kart on a plateau, the other below it: no contact
     const dx = k.x - o.x, dz = k.z - o.z, d = Math.hypot(dx, dz), min = KART_R * 2;
     if (d >= min || d < 1e-4) continue;
     const nx = dx / d, nz = dz / d, p = (min - d) * (o.local ? 0.5 : 0.9);
-    k.x += nx * p; k.z += nz * p;
+    const px = k.x + nx * p, pz = k.z + nz * p;
+    if (groundY(px, pz) > (k.y || 0) + WORLD.STEP_UP) continue; // don't shove a kart into a plateau side
+    k.x = px; k.z = pz;
     const vn = k.vx * nx + k.vz * nz; if (vn < 0) { k.vx -= nx * vn * 1.2; k.vz -= nz * vn * 1.2; }
   }
 }
@@ -2070,23 +2101,26 @@ function fire(k, now) {
   else if (w === 'star') { k.starUntil = now + 5000; k.frozenUntil = 0; sfx('power', k); }
   if (type) {
     const n = ++shotN, key = k.key + '#' + n;
-    spawnShot(k.key, type, ox, oz, k.yaw, 0, key);
-    if (k === me) myShots.push({ e: [n, type, r1(ox), r1(oz), r2(k.yaw), now], t: now });
+    spawnShot(k.key, type, ox, oz, k.yaw, 0, key, k.y);
+    if (k === me) myShots.push({ e: [n, type, r1(ox), r1(oz), r2(k.yaw), now, r1(k.y)], t: now });
     sfx(type === 'g' ? 'gun' : type === 'm' ? 'drop' : 'fire', k);
   }
   if (--k.charges <= 0) { k.weapon = null; k.charges = 0; }
   k.fireCd = now + (w === 'machinegun' ? 90 : w === 'bullets' ? 170 : 320);
 }
 let FF = false; // fast-forwarding a late-arriving shot: no kills, no effects
-function spawnShot(owner, type, x, z, yaw, age, key) {
+// launchY: height of the firing kart (network entries carry it as the 7th element; older ones mean 0).
+// Straight shots fly level at launchY + WORLD.SHOT_FLY_Y, lobs arc under gravity, mines sit on the ground.
+function spawnShot(owner, type, x, z, yaw, age, key, launchY = 0) {
   if (projById.has(key) || projById.has(key + '.0')) return;
   const offs = type === 'g' ? [-0.07, 0, 0.07] : [0];
+  launchY = +launchY || 0;
   offs.forEach((off, i) => {
     const id = type === 'g' ? key + '.' + i : key, a = yaw + off, d = DEF[type];
-    const p = { id, key, owner, type, x, z, y: 1.1, vx: 0, vz: 0, vy: 0, simT: 0, life: d.life, dead: false, landed: false, landedAt: 0 };
+    const p = { id, key, owner, type, x, z, y: launchY + WORLD.SHOT_FLY_Y, vx: 0, vz: 0, vy: 0, simT: 0, life: d.life, dead: false, landed: false, landedAt: 0 };
     if (d.spd) { p.vx = Math.sin(a) * d.spd; p.vz = Math.cos(a) * d.spd; }
-    if (type === 'l') { p.vx = Math.sin(a) * 20; p.vz = Math.cos(a) * 20; p.vy = 12; p.y = 1.5; }
-    if (type === 'm') p.y = 0.2;
+    if (type === 'l') { p.vx = Math.sin(a) * 20; p.vz = Math.cos(a) * 20; p.vy = 12; p.y = launchY + 1.5; }
+    if (type === 'm') p.y = groundY(x, z) + 0.2;
     p.mesh = makeShotMesh(type, a); p.mesh.position.set(p.x, p.y, p.z); scene.add(p.mesh);
     projs.push(p); projById.set(id, p);
     if (age > 0) {
@@ -2105,13 +2139,16 @@ function moveShot(p, dt) {
   if (p.type === 'm') return;
   if (p.type === 'l') {
     if (p.landed) return;
-    p.vy -= 30 * dt; p.x += p.vx * dt; p.z += p.vz * dt; p.y += p.vy * dt;
-    if (solidAt(p.x, p.z, 0.6)) { p.x -= p.vx * dt; p.z -= p.vz * dt; p.vx *= -0.4; p.vz *= -0.4; }
-    if (p.y <= 0.7) { p.y = 0.7; p.landed = true; p.landedAt = p.simT; }
+    p.vy -= WORLD.GRAVITY * dt; p.x += p.vx * dt; p.z += p.vz * dt; p.y += p.vy * dt;
+    // walls, obstacles and plateau sides above the lob's height bounce it back
+    if (solidAt(p.x, p.z, 0.6, p.y)) { p.x -= p.vx * dt; p.z -= p.vz * dt; p.vx *= -0.4; p.vz *= -0.4; }
+    const rest = groundY(p.x, p.z) + 0.7;
+    if (p.y <= rest) { p.y = rest; p.landed = true; p.landedAt = p.simT; }
     return;
   }
   p.x += p.vx * dt; p.z += p.vz * dt;
-  if (solidAt(p.x, p.z, 0.3)) { if (p.type === 'r' || p.type === 'n') explode(p); else { if (!FF) puffFx(p.x, p.z, p.type === 'f' ? '#BFEFFF' : '#FFE16B', 0.8); killShot(p); } }
+  // straight shots fly level: a wall, an obstacle or ground higher than the shot stops them
+  if (solidAt(p.x, p.z, 0.3, p.y)) { if (p.type === 'r' || p.type === 'n') explode(p); else { if (!FF) puffFx(p.x, p.z, p.type === 'f' ? '#BFEFFF' : '#FFE16B', 0.8); killShot(p); } }
 }
 function explode(p) {
   if (p.dead) return;
@@ -2122,13 +2159,16 @@ function explode(p) {
   sfx(p.type === 'n' ? 'big' : 'boom', p);
   for (const k of localKarts()) {
     if (k.key === p.owner || !vulnerable(k, now)) continue;
+    if (Math.abs((k.y || 0) - p.y) >= 3.5) continue; // blast doesn't reach a plateau above it or a pit below
     if (Math.hypot(k.x - p.x, k.z - p.z) < R + KART_R) kill(k, p.owner);
   }
 }
+// Does a shot at height py touch a kart at height ky? Karts are ~2 units tall.
+const levelWith = (ky, py) => Math.abs((ky || 0) - py) < 2.2;
 function directHit(p, karts, now) {
   const h = DEF[p.type].hit + KART_R;
   for (const k of karts) {
-    if (!k.alive || k.key === p.owner) continue;
+    if (!k.alive || k.key === p.owner || !levelWith(k.y, p.y)) continue;
     if ((k.x - p.x) ** 2 + (k.z - p.z) ** 2 > h * h) continue;
     if (p.type === 'r' || p.type === 'n') explode(p);
     else if (p.type === 'g') { puffFx(p.x, p.z, '#FFE16B', 0.9); killShot(p); if (k.local && vulnerable(k.ref, now)) kill(k.ref, p.owner); }
@@ -2149,9 +2189,9 @@ function updateShots(dt, karts, now) {
     if (DIRECT[p.type]) directHit(p, karts, now);
     else if (p.type === 'l' && p.landed) {
       if (p.simT - p.landedAt > 2200) { explode(p); continue; }
-      for (const k of localKarts()) if (k.alive && k.key !== p.owner && Math.hypot(k.x - p.x, k.z - p.z) < 4.2) { trigger(p, k); break; }
+      for (const k of localKarts()) if (k.alive && k.key !== p.owner && levelWith(k.y, p.y) && Math.hypot(k.x - p.x, k.z - p.z) < 4.2) { trigger(p, k); break; }
     } else if (p.type === 'm' && p.simT > 600) {
-      for (const k of localKarts()) if (k.alive && k.key !== p.owner && Math.hypot(k.x - p.x, k.z - p.z) < 2.4) { trigger(p, k); break; }
+      for (const k of localKarts()) if (k.alive && k.key !== p.owner && levelWith(k.y, p.y) && Math.hypot(k.x - p.x, k.z - p.z) < 2.4) { trigger(p, k); break; }
     }
     if (p.dead) continue;
     p.mesh.position.set(p.x, p.y, p.z);
@@ -2195,7 +2235,41 @@ function contactKills(karts, now) {
 }
 
 /* ---------- bots ---------- */
-function blocked(x, z) { return solidAt(x, z, 2); }
+// Can a bot at height y drive to (x, z)? Walls and obstacles block; so does terrain, read along the
+// path from (fromX, fromZ): any sample that rises more than STEP_UP over the previous one is a ledge
+// (a plateau side from below), while a ramp's gentle rise passes. Without a from point, just the height
+// at the target counts.
+function blocked(x, z, y, fromX, fromZ) {
+  if (solidAt(x, z, 2)) return true;
+  if (y === undefined) return false;
+  if (fromX === undefined) return groundY(x, z) > y + WORLD.STEP_UP;
+  const n = Math.max(1, Math.ceil(Math.hypot(x - fromX, z - fromZ) / 0.75));
+  let prev = y;
+  for (let i = 1; i <= n; i++) {
+    const g = groundY(fromX + (x - fromX) * i / n, fromZ + (z - fromZ) * i / n);
+    if (g > prev + WORLD.STEP_UP) return true;
+    prev = g;
+  }
+  return false;
+}
+// Nearest TERRAIN ramp that a kart at (x, z, y) can enter (low end no higher than y + STEP_UP) and that
+// climbs to targetY (high end at least targetY - STEP_UP). Returns the entry point a couple of units
+// outside the low end, the point just past the high end, and the ramp itself; null when there is none.
+const inRect = (x, z, t) => Math.abs(x - t.x) <= t.w / 2 && Math.abs(z - t.z) <= t.d / 2;
+// Standing on the ramp's surface (inside its footprint at its height), not beside it at a lower level.
+const onRamp = (x, z, y, t) => inRect(x, z, t) && y >= groundY(x, z) - WORLD.STEP_UP;
+function rampTo(x, z, y, targetY) {
+  let best = null, bd = 1e9;
+  for (const t of TERRAIN) {
+    if (!t.dir || t.y0 > y + WORLD.STEP_UP || t.y1 < targetY - WORLD.STEP_UP) continue;
+    const ax = t.dir === 'x' ? 1 : t.dir === '-x' ? -1 : 0, az = t.dir === 'z' ? 1 : t.dir === '-z' ? -1 : 0; // unit vector up the ramp
+    const hx = t.w / 2, hd = t.d / 2;
+    const entry = [t.x - ax * (hx + 3), t.z - az * (hd + 3)], top = [t.x + ax * (hx + 2), t.z + az * (hd + 2)];
+    const d = onRamp(x, z, y, t) ? 0 : Math.hypot(entry[0] - x, entry[1] - z); // a ramp we're already climbing wins
+    if (d < bd) { bd = d; best = { ex: entry[0], ez: entry[1], tx: top[0], tz: top[1], ax, az, ramp: t }; }
+  }
+  return best;
+}
 function botThink(b, dt, now, karts) {
   if (!b.alive) return { thr: 0, steer: 0, fire: false };
   const ai = b.ai;
@@ -2219,12 +2293,27 @@ function botThink(b, dt, now, karts) {
     if (!ai.wp || Math.hypot(ai.wp[0] - b.x, ai.wp[1] - b.z) < 6) ai.wp = BOX_SPOTS[Math.floor(Math.random() * BOX_SPOTS.length)];
     tx = ai.wp[0]; tz = ai.wp[1];
   } else if (E) { tx = E.x + E.vx * dE / 70; tz = E.z + E.vz * dE / 70; }
+  // elevation: a target more than a step above us needs a ramp; head for its entry, then up it to the top.
+  // Lower targets need nothing special (driving off the edge and falling is fine).
+  const gT = groundY(tx, tz);
+  if (gT > b.y + WORLD.STEP_UP) {
+    const r = rampTo(b.x, b.z, b.y, gT);
+    if (r) {
+      // stage 1 only while actually on the ramp or at its entry: follow the ramp's centre line (aim a few units
+      // ahead along it, up to just past the top) so a narrow ramp is climbed straight; otherwise go to the entry
+      if (onRamp(b.x, b.z, b.y, r.ramp) || Math.hypot(r.ex - b.x, r.ez - b.z) < 3.5) {
+        ai.rampStage = 1;
+        const along = (b.x - r.ex) * r.ax + (b.z - r.ez) * r.az, total = (r.tx - r.ex) * r.ax + (r.tz - r.ez) * r.az;
+        const s = Math.min(total, along + 6); tx = r.ex + r.ax * s; tz = r.ez + r.az * s;
+      } else { ai.rampStage = 0; tx = r.ex; tz = r.ez; }
+    }
+  } else ai.rampStage = 0;
   const want = Math.atan2(tx - b.x, tz - b.z);
-  const diff = wrap(want - b.yaw + ai.jit);
+  const diff = wrap(want - b.yaw + (ai.rampStage ? 0 : ai.jit));
   let steer = clamp(-diff * 2.4, -1, 1), thr = 1;
-  if (blocked(b.x + Math.sin(b.yaw) * 6, b.z + Math.cos(b.yaw) * 6)) {
-    const L = blocked(b.x + Math.sin(b.yaw + 0.8) * 6, b.z + Math.cos(b.yaw + 0.8) * 6);
-    const Rr = blocked(b.x + Math.sin(b.yaw - 0.8) * 6, b.z + Math.cos(b.yaw - 0.8) * 6);
+  const look = a => blocked(b.x + Math.sin(b.yaw + a) * 6, b.z + Math.cos(b.yaw + a) * 6, b.y, b.x, b.z);
+  if (look(0)) {
+    const L = look(0.8), Rr = look(-0.8);
     steer = L && !Rr ? 1 : !L && Rr ? -1 : (steer >= 0 ? 1 : -1);
   }
   if (Math.hypot(b.vx, b.vz) < 2.5) ai.stuck = (ai.stuck || 0) + dt; else ai.stuck = 0;
@@ -2261,7 +2350,7 @@ function syncRemotes(dt, now) {
     const name = String(p.n || 'Driver').slice(0, 14) || 'Driver';
     if (!R) {
       const ci = clamp(p.c | 0, 0, COLORS.length - 1);
-      R = { key, p, at, view: buildKart(COLORS[ci]), ci, dx: +p.x || 0, dz: +p.z || 0, dyaw: +p.y || 0, lastD: null, lastRd: null, lastAlive: !!p.a, name };
+      R = { key, p, at, view: buildKart(COLORS[ci]), ci, dx: +p.x || 0, dz: +p.z || 0, dy: +p.h || 0, dyaw: +p.y || 0, lastD: null, lastRd: null, lastAlive: !!p.a, name };
       setTag(R.view, name); scene.add(R.view.g); remotes.set(key, R);
       pushFeed(name, null, false, 'joined');
     }
@@ -2279,14 +2368,14 @@ function syncRemotes(dt, now) {
       R.lastD = p.d | 0; R.lastRd = curRd;
     }
     if (R.lastAlive && !p.a) { boomFx(R.dx, R.dz, 3.5, '#FF6B3D'); sfx('boom', { x: R.dx, z: R.dz }); }
-    if (!R.lastAlive && p.a) { R.dx = +p.x || 0; R.dz = +p.z || 0; R.dyaw = +p.y || 0; }
+    if (!R.lastAlive && p.a) { R.dx = +p.x || 0; R.dz = +p.z || 0; R.dy = +p.h || 0; R.dyaw = +p.y || 0; }
     R.lastAlive = !!p.a;
     // shots this player fired
     if (Array.isArray(p.sh)) for (const e of p.sh) {
       if (!Array.isArray(e) || e.length < 6 || !DEF[e[1]]) continue;
       const sk = key + '#' + e[0]; if (seenKeys.has(sk)) continue; seenKeys.set(sk, now);
       const age = Math.max(0, (+p.ts || 0) - (+e[5] || 0)) + (now - at) + 30;
-      if (age < DEF[e[1]].life) spawnShot(key, e[1], +e[2] || 0, +e[3] || 0, +e[4] || 0, age, sk);
+      if (age < DEF[e[1]].life) spawnShot(key, e[1], +e[2] || 0, +e[3] || 0, +e[4] || 0, age, sk, +e[6] || 0);
     }
     // boxes this player took
     if (Array.isArray(p.bx)) for (const e of p.bx) {
@@ -2301,9 +2390,10 @@ function syncRemotes(dt, now) {
     // smooth display position
     const lag = Math.min(0.25, Math.max(0, now - at) / 1000);
     const tx = (+p.x || 0) + (+p.vx || 0) * lag, tz = (+p.z || 0) + (+p.vz || 0) * lag;
-    if (Math.hypot(tx - R.dx, tz - R.dz) > 14) { R.dx = tx; R.dz = tz; }
+    const ty = +p.h || 0; // height (y is yaw in presence)
+    if (Math.hypot(tx - R.dx, tz - R.dz) > 14) { R.dx = tx; R.dz = tz; R.dy = ty; }
     const f = 1 - Math.exp(-dt * 14);
-    R.dx += (tx - R.dx) * f; R.dz += (tz - R.dz) * f; R.dyaw = wrap(R.dyaw + wrap((+p.y || 0) - R.dyaw) * f);
+    R.dx += (tx - R.dx) * f; R.dz += (tz - R.dz) * f; R.dy += (ty - R.dy) * f; R.dyaw = wrap(R.dyaw + wrap((+p.y || 0) - R.dyaw) * f);
     // drift flag: -1/0/1 (direction); older clients don't send it
     // ignore a stale flag: a player whose tab stopped sending mid-drift shouldn't smoke forever
     R.drift = p.a && now - at < DRIVE.REMOTE_DRIFT_STALE_MS ? clamp(Math.round(+p.dr || 0), -1, 1) : 0;
@@ -2317,7 +2407,7 @@ function buildPresence(now) {
   myTg = myTg.filter(t => now - t.t < 8000).slice(-10);
   const fx = (now < me.spikeUntil ? 'k' : '') + (now < me.starUntil ? 's' : '') + (now < me.frozenUntil ? 'f' : '') + (now < me.protectUntil ? 'u' : '');
   // presence keys must be plain identifiers, so maps travel as [key, value] pairs
-  return { v: 1, n: me.name, c: me.colorIdx, x: r1(me.x), z: r1(me.z), y: r2(me.yaw), vx: r1(me.vx), vz: r1(me.vz), a: me.alive ? 1 : 0, hp: Math.round(me.hp), fx, dr: me.drift,
+  return { v: 1, n: me.name, c: me.colorIdx, x: r1(me.x), z: r1(me.z), h: r1(me.y), y: r2(me.yaw), vx: r1(me.vx), vz: r1(me.vz), a: me.alive ? 1 : 0, hp: Math.round(me.hp), fx, dr: me.drift,
     rd: curRd, kb: Object.entries(me.kb), d: me.d, lk: me.lk, sh: myShots.map(s => s.e), bx: myBx.map(b => [b.i, b.t]), tg: myTg.map(t => t.k), ts: now };
 }
 
@@ -2553,7 +2643,7 @@ $('#play').addEventListener('click', async () => {
   me = makeKartState(Net.myKey, name, myColor, false);
   me.view = buildKart(COLORS[myColor]); scene.add(me.view.g);
   respawn(me); started = true;
-  camPos.set(me.x - Math.sin(me.yaw) * 15, 11, me.z - Math.cos(me.yaw) * 15); camLook.set(me.x, 1, me.z);
+  camPos.set(me.x - Math.sin(me.yaw) * 15, me.y + 11, me.z - Math.cos(me.yaw) * 15); camLook.set(me.x, me.y + 1, me.z);
   $('#menu').hidden = true; $('#hud').hidden = false; document.body.classList.add('playing');
   setTimeout(() => { $('#help').style.opacity = '0'; }, 12000);
   canvas.focus();
@@ -2622,12 +2712,12 @@ function update(dt) {
   // visuals
   for (const k of localKarts()) {
     const P = renderPose(k, A), body = P.yaw + P.lean;
-    styleKart(k.view, { x: P.x, z: P.z, yaw: body, alive: k.alive, spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil, sp: k.sp }, tSec);
+    styleKart(k.view, { x: P.x, y: P.y, z: P.z, yaw: body, alive: k.alive, spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil, sp: k.sp }, tSec);
     driftFx(k.view, k.alive && k.drift !== 0, P.x, P.z, body, dt);
   }
   for (const R of remotes.values()) {
     const fx = String(R.p.fx || ''), body = R.dyaw + (R.lean || 0);
-    styleKart(R.view, { x: R.dx, z: R.dz, yaw: body, alive: !!R.p.a, spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u'), sp: Math.hypot(+R.p.vx || 0, +R.p.vz || 0) }, tSec);
+    styleKart(R.view, { x: R.dx, y: R.dy, z: R.dz, yaw: body, alive: !!R.p.a, spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u'), sp: Math.hypot(+R.p.vx || 0, +R.p.vz || 0) }, tSec);
     driftFx(R.view, !!R.p.a && !!R.drift, R.dx, R.dz, body, dt);
   }
   updateFx(dt);
@@ -2635,7 +2725,7 @@ function update(dt) {
   if (started) {
     const M = renderPose(me, A), fx = Math.sin(M.yaw), fz = Math.cos(M.yaw);
     const back = camera.aspect < 1 ? 18 : 15, high = camera.aspect < 1 ? 14 : 11;
-    if (me.alive) { camPos.lerp(new THREE.Vector3(M.x - fx * back, high, M.z - fz * back), 1 - Math.exp(-dt * 5)); camLook.lerp(new THREE.Vector3(M.x + fx * 5, 1, M.z + fz * 5), 1 - Math.exp(-dt * 8)); }
+    if (me.alive) { camPos.lerp(new THREE.Vector3(M.x - fx * back, M.y + high, M.z - fz * back), 1 - Math.exp(-dt * 5)); camLook.lerp(new THREE.Vector3(M.x + fx * 5, M.y + 1, M.z + fz * 5), 1 - Math.exp(-dt * 8)); }
     camera.position.copy(camPos);
     if (shake > 0) { camera.position.x += rand(-1, 1) * shake; camera.position.y += rand(-1, 1) * shake; shake = Math.max(0, shake - dt * 2.5); }
     camera.lookAt(camLook);
@@ -2655,7 +2745,7 @@ function frame(t) {
 // Test/debug handle, only with ?debug in the URL (module scope hides everything else).
 if (/[?&]debug(?:[=&]|$)/.test(location.search)) {
   window.SK = {
-    THREE, scene, camera, renderer, DRIVE, WORLD, TERRAIN, WEAPONS, DEF, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence, damage, groundY,
+    THREE, scene, camera, renderer, DRIVE, WORLD, TERRAIN, WEAPONS, DEF, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence, damage, groundY, rampTo, solidAt,
     get me() { return me; }, get bots() { return bots; }, get remotes() { return remotes; }, get Net() { return Net; },
     get started() { return started; }, get curRd() { return curRd; }, get fxList() { return fxList; }, get boxes() { return boxes; },
     get physics() { return physics; }, get skidNext() { return skidNext; },
