@@ -589,9 +589,8 @@ mir(0, 80, (x, z) => {                                             // raised wal
 });
 
 /* ---------- weapons ---------- */
-// id -> label, charges per pickup, drop weight, HUD hint. DEF (below) holds each shot type's numbers.
-// ROUND-2 NOTE: cannon, machinegun and fakebox are placeholders until the weapon engine lands
-// (they currently fire like grenuke, bullets and mines respectively).
+// id -> label, charges per pickup, drop weight, HUD hint. SHOT_OF maps an id to the shot type it fires (DEF holds
+// each type's numbers); STATE_OF maps the two self-buffs to the kart timer they set.
 const WEAPONS = {
   rockets:    { label: 'Rockets',         ch: 3,  w: 20, sub: 'Slow and heavy' },
   bullets:    { label: 'Bullets',         ch: 6,  w: 20, sub: 'Triple shot' },
@@ -607,15 +606,27 @@ const WEAPONS = {
 };
 const W_TOTAL = Object.values(WEAPONS).reduce((s, w) => s + w.w, 0);
 function rollWeapon() { let r = Math.random() * W_TOTAL; for (const k in WEAPONS) { r -= WEAPONS[k].w; if (r <= 0) return k; } return 'rockets'; }
+const SHOT_OF = { rockets: 'r', bullets: 'g', machinegun: 'h', snowballs: 'f', cannon: 'c', grenuke: 'l', nuke: 'n', mines: 'm', fakebox: 'x' };
+const STATE_OF = { spiky: { key: 'spikeUntil', dur: 6000 }, star: { key: 'starUntil', dur: 5000 } };
+// Shot types (the one-letter codes travel over the network). Damage is against WORLD.HP_MAX = 100.
+//   spd: units/s (straight shots fly level; arcs also get vy and fall under WORLD.GRAVITY)   life: ms before the shot
+//   expires (explodes if it has a blast)   hit: direct-hit radius added to KART_R   dmg: direct-hit damage
+//   blast: explosion radius; splash [centre, edge] damage falls off linearly to blast + KART_R; vert: height reach
+//   spread: one shot per entry (yaw offsets, rad)   cd: ms between shots (default 320)   hold: hold Space to keep firing
+//   home: homing (range, cone half-angle rad, max turn rad/s)   freeze: ms the victim is frozen
+//   bounce: restitution off walls (c) / off the ground on the first landing (l)   fuse: ms after the second landing
+//   prox: trigger radius for placed and resting shots   arm: ms before a mine is live   drop: placed behind the kart
 const DEF = {
-  r: { spd: 55, life: 2600, hit: 1.0, blast: 4.5 },
-  n: { spd: 30, life: 3600, hit: 1.4, blast: 13 },
-  g: { spd: 85, life: 900, hit: 0.7 },
-  f: { spd: 46, life: 2200, hit: 1.2 },
-  l: { life: 6000, blast: 7.5 },
-  m: { life: 30000, blast: 5 },
+  r: { spd: 48, life: 3000, hit: 1.0, dmg: 60, blast: 4.5, splash: [60, 20] },
+  g: { spd: 85, life: 900, hit: 0.7, dmg: 7, spread: [-0.09, 0, 0.09], cd: 170 },
+  h: { spd: 70, life: 1100, hit: 0.7, dmg: 4, cd: 90, hold: true, home: { range: 28, cone: 0.61, turn: 2.2 } },
+  f: { spd: 42, life: 2400, hit: 1.2, dmg: 10, freeze: 2000, spread: [-0.12, 0, 0.12] },
+  n: { spd: 24, life: 4000, hit: 1.4, dmg: 999, blast: 14, splash: [999, 999], vert: 4 },
+  c: { spd: 26, vy: 13, life: 6000, hit: 1.0, dmg: 45, blast: 4, splash: [45, 15], bounce: 0.4 },
+  l: { spd: 17, vy: 20, life: 9000, hit: 1.0, dmg: 80, blast: 7.5, splash: [80, 30], bounce: 0.45, fuse: 900, prox: 4 },
+  m: { life: 30000, dmg: 999, blast: 5, splash: [999, 999], arm: 600, prox: 2.4, drop: true },
+  x: { life: 30000, dmg: 35, prox: 2.7, drop: true },
 };
-const DIRECT = { r: 1, n: 1, g: 1, f: 1 };
 
 /* ---------- three.js scene ---------- */
 /* =========================================================================
@@ -1931,6 +1942,9 @@ const shotMats = {
   bullet: new THREE.MeshBasicMaterial({ color: hdr('#FFE16B', 2.4) }), frost: new THREE.MeshBasicMaterial({ color: hdr('#9FE8FF', 2.2) }),
   lob: lam('#2B2F3A', { roughness: 0.5, metalness: 0.3 }), band: lam('#E8553E', { emissive: hdr('#FF5A2E', 1), emissiveIntensity: 0.9 }),
   mine: lam('#3A3F4D', { roughness: 0.45, metalness: 0.4 }), light: new THREE.MeshBasicMaterial({ color: hdr('#FF3B2F', 2.8) }),
+  // machine gun: small yellow-green tracer with a short, fading tail; cannon: dark iron ball
+  mg: new THREE.MeshBasicMaterial({ color: hdr('#D8FF5A', 2.6) }), mgTail: new THREE.MeshBasicMaterial({ color: hdr('#D8FF5A', 1.2), transparent: true, opacity: 0.55, depthWrite: false }),
+  iron: lam('#3B3F48', { roughness: 0.35, metalness: 0.85 }),
 };
 const G = {
   rocketBody: new THREE.CylinderGeometry(0.28, 0.28, 1.5, 10).rotateX(Math.PI / 2),
@@ -1938,16 +1952,23 @@ const G = {
   bullet: new THREE.SphereGeometry(0.28, 8, 6), frost: new THREE.IcosahedronGeometry(0.65, 0),
   lob: new THREE.SphereGeometry(0.7, 14, 10), band: new THREE.TorusGeometry(0.7, 0.12, 6, 16),
   mine: new THREE.CylinderGeometry(0.9, 1.0, 0.3, 16), light: new THREE.SphereGeometry(0.22, 8, 6),
+  mg: new THREE.SphereGeometry(0.17, 8, 6), mgTail: new THREE.CylinderGeometry(0.03, 0.13, 1.1, 6).rotateX(Math.PI / 2),
+  iron: new THREE.SphereGeometry(0.55, 14, 10), pad: new THREE.CircleGeometry(2.3, 32).rotateX(-Math.PI / 2),
 };
+// Shot meshes by type. The group's origin is the shot's position (its y). A fake box (x) is a real ? box's
+// geometry, material and floor pad, so it reads as loot until it fizzes; the pad sits on the ground 1.55 below.
 function makeShotMesh(type, yaw) {
   const g = new THREE.Group();
   const add = (geo, mat, z = 0, y = 0, s = 1) => { const m = new THREE.Mesh(geo, mat); m.position.set(0, y, z); m.scale.setScalar(s); g.add(m); return m; };
   if (type === 'r') { add(G.rocketBody, shotMats.rocketBody); add(G.rocketTip, shotMats.rocketTip, 1.05); }
   else if (type === 'n') { add(G.rocketBody, shotMats.bang, 0, 0, 2); add(G.rocketTip, shotMats.bangTip, 2.1, 0, 2); }
   else if (type === 'g') add(G.bullet, shotMats.bullet);
+  else if (type === 'h') { add(G.mg, shotMats.mg); add(G.mgTail, shotMats.mgTail, -0.6); }
   else if (type === 'f') add(G.frost, shotMats.frost);
-  else if (type === 'l') { add(G.lob, shotMats.lob); const b = add(G.band, shotMats.band); b.rotation.x = Math.PI / 2; }
+  else if (type === 'c') { const b = add(G.iron, shotMats.iron); b.castShadow = true; }
+  else if (type === 'l') { add(G.lob, shotMats.lob); const b = add(G.band, shotMats.band); b.rotation.x = Math.PI / 2; g.userData.light = add(G.light, shotMats.light, 0, 0.72); }
   else if (type === 'm') { add(G.mine, shotMats.mine); g.userData.light = add(G.light, shotMats.light, 0, 0.25); }
+  else if (type === 'x') { const b = add(boxGeo, boxMat); b.castShadow = true; g.userData.box = b; const pad = add(G.pad, padMat, 0, -1.55); pad.renderOrder = 1; }
   g.rotation.y = yaw; return g;
 }
 const fxList = [];
@@ -1967,30 +1988,32 @@ const smokeTex = (() => {
   for (const [x, y, r] of [[46, 52, 30], [80, 50, 28], [58, 80, 30], [84, 78, 24]]) blob(x, y, r, 0.35);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 })();
-function boomFx(x, z, radius, color = '#FF9A3C') {
+// y: the floor the explosion sits on (a kart's or the ground under a shot); the fireball is 1 above it, the ring 0.2
+function boomFx(x, z, radius, color = '#FF9A3C', y = 0) {
   // fireball shell: saturated orange below the bloom threshold (green/blue pulled down so ACES keeps it fiery)
   const shell = hdr(color, 0.5, 1); shell.g *= 0.75; shell.b *= 0.4;
   const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: shell, transparent: true, opacity: .9, depthWrite: false }));
-  s.position.set(x, 1, z); s.renderOrder = 2; scene.add(s);
+  s.position.set(x, y + 1, z); s.renderOrder = 2; scene.add(s);
   // hot core (lum ~2.7, above the threshold) gives the bloom; it grows with the shell and is gone by mid-life
   const core = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: shell.clone().multiplyScalar(6), transparent: true, depthWrite: false }));
   core.scale.setScalar(0.45); core.renderOrder = 3; s.add(core);
   fxList.push({ m: s, t: 0, dur: 0.45, kind: 'grow', r: radius });
   const ring = new THREE.Mesh(fxRingGeo, new THREE.MeshBasicMaterial({ color: hdr('#FFE2B0', 2.0), transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
-  ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.2, z); ring.renderOrder = 2; scene.add(ring);
+  ring.rotation.x = -Math.PI / 2; ring.position.set(x, y + 0.2, z); ring.renderOrder = 2; scene.add(ring);
   fxList.push({ m: ring, t: 0, dur: 0.5, kind: 'grow', r: radius * 1.3 });
   const n = Math.min(14, 5 + Math.round(radius));
   for (let i = 0; i < n; i++) {
     const d = new THREE.Mesh(debrisGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? '#2B2F3A' : shell, transparent: true }));
-    d.position.set(x, 1, z); scene.add(d);
+    d.position.set(x, y + 1, z); scene.add(d);
     const a = Math.random() * TAU, sp = rand(6, 14);
-    fxList.push({ m: d, t: 0, dur: rand(.6, 1), kind: 'debris', vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(6, 14) });
+    fxList.push({ m: d, t: 0, dur: rand(.6, 1), kind: 'debris', vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(6, 14), floor: y + 0.25 });
   }
   if (me && started) { const dd = Math.hypot(x - me.x, z - me.z); if (dd < radius + 14 && !reduceMotion) shake = Math.max(shake, clamp(1 - dd / (radius + 14), 0, 1) * 0.9); }
 }
-function puffFx(x, z, color, size = 1.2) {
+// a soft flash centred 1.2 above floor level y
+function puffFx(x, z, color, size = 1.2, y = 0) {
   const s = new THREE.Mesh(fxSphereGeo, new THREE.MeshBasicMaterial({ color: hdr(color, 2.0), transparent: true, opacity: .8, depthWrite: false }));
-  s.position.set(x, 1.2, z); s.renderOrder = 2; scene.add(s); fxList.push({ m: s, t: 0, dur: 0.3, kind: 'grow', r: size });
+  s.position.set(x, y + 1.2, z); s.renderOrder = 2; scene.add(s); fxList.push({ m: s, t: 0, dur: 0.3, kind: 'grow', r: size });
 }
 // drift: skid marks (one instanced mesh used as a ring buffer) and tyre smoke
 // Skid alpha: soft long edges, and both ends ramp over ~8% of the quad (about the 0.05 overlap
@@ -2010,23 +2033,24 @@ const skidMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-
 skidMesh.frustumCulled = false; skidMesh.renderOrder = 1; scene.add(skidMesh);
 let skidNext = 0;
 const skidM = new THREE.Matrix4(), skidQ = new THREE.Quaternion(), skidP = new THREE.Vector3(), skidS = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
-function addSkid(ax, az, bx, bz) {
+function addSkid(ax, az, bx, bz, y = 0) {
   const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz);
-  skidP.set((ax + bx) / 2, 0.045, (az + bz) / 2); skidQ.setFromAxisAngle(UP, Math.atan2(dx, dz)); skidS.set(DRIVE.SKID_WIDTH, 1, len + 0.05);
+  skidP.set((ax + bx) / 2, y + 0.045, (az + bz) / 2); skidQ.setFromAxisAngle(UP, Math.atan2(dx, dz)); skidS.set(DRIVE.SKID_WIDTH, 1, len + 0.05);
   skidMesh.setMatrixAt(skidNext, skidM.compose(skidP, skidQ, skidS)); skidMesh.instanceMatrix.needsUpdate = true;
   skidNext = (skidNext + 1) % DRIVE.SKID_MAX;
 }
 function clearSkids() { skidM.makeScale(0, 0, 0); for (let i = 0; i < DRIVE.SKID_MAX; i++) skidMesh.setMatrixAt(i, skidM); skidMesh.instanceMatrix.needsUpdate = true; }
 clearSkids();
-// v: kart view; x/z/bodyYaw: the pose being drawn this frame
-function driftFx(v, drifting, x, z, bodyYaw, dt) {
+// v: kart view; x/y/z/bodyYaw: the pose being drawn this frame (skids and smoke sit on the kart's height, so a
+// drift on the plateau is not drawn under it)
+function driftFx(v, drifting, x, y, z, bodyYaw, dt) {
   if (!drifting) { v.skid = null; return; }
   const c = Math.cos(bodyYaw), s = Math.sin(bodyYaw);
   const wheels = [-1.3, 1.3].map(lx => [x + lx * c + -1.1 * s, z - lx * s + -1.1 * c]); // rear wheels
   if (v.skid && Math.hypot(wheels[0][0] - v.skid[0][0], wheels[0][1] - v.skid[0][1]) > 6) v.skid = null; // teleported
   if (!v.skid) v.skid = wheels;
   else if (Math.hypot(wheels[0][0] - v.skid[0][0], wheels[0][1] - v.skid[0][1]) >= DRIVE.SKID_SEG) {
-    for (let i = 0; i < 2; i++) addSkid(v.skid[i][0], v.skid[i][1], wheels[i][0], wheels[i][1]);
+    for (let i = 0; i < 2; i++) addSkid(v.skid[i][0], v.skid[i][1], wheels[i][0], wheels[i][1], y);
     v.skid = wheels;
   }
   v.smokeT = (v.smokeT || 0) - dt;
@@ -2035,7 +2059,7 @@ function driftFx(v, drifting, x, z, bodyYaw, dt) {
     for (const [wx, wz] of wheels) {
       const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, color: '#D9D6D0', transparent: true, opacity: 0.45, depthWrite: false, rotation: rand(0, TAU) })); // stays below the bloom threshold
       m.geometry = smokeQuad; m.frustumCulled = false;
-      m.position.set(wx + rand(-0.2, 0.2), 0.5, wz + rand(-0.2, 0.2)); m.renderOrder = 2; scene.add(m); // drawn over skid marks
+      m.position.set(wx + rand(-0.2, 0.2), y + 0.5, wz + rand(-0.2, 0.2)); m.renderOrder = 2; scene.add(m); // drawn over skid marks
       fxList.push({ m, t: 0, dur: rand(0.45, 0.7), kind: 'smoke', r: rand(1.1, 1.6) });
     }
   }
@@ -2049,7 +2073,7 @@ function updateFx(dt) {
       if (f.m.children.length) f.m.children[0].material.opacity = Math.max(0, 1 - 2 * k); // boomFx hot core
     }
     else if (f.kind === 'smoke') { f.m.scale.setScalar(0.35 + f.r * k); f.m.position.y += dt * 1.6; f.m.material.opacity = (1 - k) * 0.45; }
-    else { f.vy -= 30 * dt; f.m.position.x += f.vx * dt; f.m.position.y = Math.max(0.25, f.m.position.y + f.vy * dt); f.m.position.z += f.vz * dt; f.m.rotation.x += dt * 8; f.m.material.opacity = 1 - k; }
+    else { f.vy -= 30 * dt; f.m.position.x += f.vx * dt; f.m.position.y = Math.max(f.floor || 0.25, f.m.position.y + f.vy * dt); f.m.position.z += f.vz * dt; f.m.rotation.x += dt * 8; f.m.material.opacity = 1 - k; }
   }
 }
 
@@ -2078,6 +2102,10 @@ function sfx(kind, at) {
   try {
     if (kind === 'fire') tone(420, 90, 0.16, 'square', 0.18 * v);
     else if (kind === 'gun') tone(900, 300, 0.06, 'square', 0.1 * v);
+    else if (kind === 'mg') tone(1300, 500, 0.04, 'square', 0.07 * v);
+    else if (kind === 'lob') tone(260, 520, 0.14, 'triangle', 0.2 * v);
+    else if (kind === 'hit') tone(1500, 1100, 0.05, 'square', 0.12);               // a shot of yours landed (not positional)
+    else if (kind === 'fizz') { noise(0.3, 0.5 * v, 2400); tone(700, 110, 0.35, 'sawtooth', 0.14 * v); }
     else if (kind === 'drop') tone(180, 120, 0.12, 'triangle', 0.25 * v);
     else if (kind === 'boom') { noise(0.55, 0.9 * v, 900); tone(120, 40, 0.4, 'sine', 0.4 * v); }
     else if (kind === 'big') { noise(1.1, 1.2 * v, 600); tone(90, 25, 0.9, 'sine', 0.6 * v); }
@@ -2219,6 +2247,13 @@ function solidAt(x, z, pad, y) {
   if (y !== undefined && groundY(x, z) > y + 0.3) return true;
   return false;
 }
+// solidAt for things that fly: obstacles only block up to their height (h), so a shot higher than a crate or a
+// container passes over it; walls always block, and ground more than 0.3 above y blocks as in solidAt.
+function blockedAt(x, z, pad, y) {
+  if (Math.abs(x) > WALL_IN - pad || Math.abs(z) > WALL_IN - pad) return true;
+  for (const o of OBST) if (o.h > y + 0.3 && Math.abs(x - o.x) < o.w / 2 + pad && Math.abs(z - o.z) < o.d / 2 + pad) return true;
+  return groundY(x, z) > y + 0.3;
+}
 function collideWorld(k) {
   const r = KART_R, lim = WALL_IN - r;
   if (k.x > lim) { k.x = lim; if (k.vx > 0) k.vx *= -0.3; } if (k.x < -lim) { k.x = -lim; if (k.vx < 0) k.vx *= -0.3; }
@@ -2353,116 +2388,184 @@ function pushApart(k, karts) {
     const vn = k.vx * nx + k.vz * nz; if (vn < 0) { k.vx -= nx * vn * 1.2; k.vz -= nz * vn * 1.2; }
   }
 }
+// Splash damage of shot type `type` on a kart `dist` from the blast centre: DEF.splash[0] at the centre falling
+// linearly to DEF.splash[1] at the edge of the blast (blast radius + KART_R); 0 beyond it.
+function splashDmg(type, dist) {
+  const d = DEF[type]; if (!d || !d.blast || !d.splash) return 0;
+  const edge = d.blast + KART_R; if (dist >= edge) return 0;
+  const f = Math.max(0, dist) / edge; return d.splash[0] + (d.splash[1] - d.splash[0]) * f;
+}
+// One step of an arcing shot (cannon ball, grenuke): gravity, then the x/z move; walls, obstacles and plateau
+// sides higher than the shot (blockedAt) bounce the blocked axis with restitution `rest`. Returns the ground height
+// when the shot is falling and within 0.6 of the ground under it (a landing), else null. Pure maths on the shot
+// record {x, y, z, vx, vy, vz}, so Node tests can fly shots over the real map.
+function arcStep(p, dt, rest) {
+  p.vy -= WORLD.GRAVITY * dt; p.y += p.vy * dt;
+  const nx = p.x + p.vx * dt, nz = p.z + p.vz * dt;
+  if (!blockedAt(nx, nz, 0.6, p.y)) { p.x = nx; p.z = nz; }
+  else if (!blockedAt(p.x, nz, 0.6, p.y)) { p.z = nz; p.vx *= -rest; }
+  else if (!blockedAt(nx, p.z, 0.6, p.y)) { p.x = nx; p.vz *= -rest; }
+  else { p.vx *= -rest; p.vz *= -rest; }
+  const g = groundY(p.x, p.z);
+  return p.vy < 0 && p.y <= g + 0.6 ? g : null;
+}
 
 /* ---------- weapons & projectiles ---------- */
 function giveWeapon(k) { const w = rollWeapon(); k.weapon = w; k.charges = WEAPONS[w].ch; if (k === me) flashSlot(); }
+// Fire the kart's weapon once: a self-buff (spiky, star) sets its timer; everything else spawns one shot record
+// (a spread fires several from one record) and, for the local player, queues it for the presence payload.
 function fire(k, now) {
   if (!k.alive || !k.weapon || now < k.fireCd || now < k.frozenUntil) return;
-  const w = k.weapon, fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
-  let type = null, ox = k.x + fx * 2.7, oz = k.z + fz * 2.7;
-  if (w === 'rockets') type = 'r'; else if (w === 'bullets' || w === 'machinegun') type = 'g'; else if (w === 'snowballs') type = 'f';
-  else if (w === 'nuke') type = 'n'; else if (w === 'grenuke' || w === 'cannon') type = 'l';
-  else if (w === 'mines' || w === 'fakebox') { type = 'm'; ox = k.x - fx * 2.9; oz = k.z - fz * 2.9; }
-  else if (w === 'spiky') { k.spikeUntil = now + 6000; sfx('power', k); }
-  else if (w === 'star') { k.starUntil = now + 5000; k.frozenUntil = 0; sfx('power', k); }
-  if (type) {
+  const w = k.weapon, fx = Math.sin(k.yaw), fz = Math.cos(k.yaw), type = SHOT_OF[w], st = STATE_OF[w], d = type && DEF[type];
+  if (st) { k[st.key] = now + st.dur; if (w === 'star') k.frozenUntil = 0; sfx('power', k); }
+  else if (d) {
+    const back = d.drop ? -2.9 : 2.7, ox = k.x + fx * back, oz = k.z + fz * back;
     const n = ++shotN, key = k.key + '#' + n;
     spawnShot(k.key, type, ox, oz, k.yaw, 0, key, k.y);
     if (k === me) myShots.push({ e: [n, type, r1(ox), r1(oz), r2(k.yaw), now, r1(k.y)], t: now });
-    sfx(type === 'g' ? 'gun' : type === 'm' ? 'drop' : 'fire', k);
+    sfx(type === 'g' ? 'gun' : type === 'h' ? 'mg' : d.drop ? 'drop' : d.vy ? 'lob' : 'fire', k);
+    if (type === 'h' && k.charges % 4 === 0) puffFx(ox, oz, '#D8FF5A', 0.7, k.y + WORLD.SHOT_FLY_Y - 1.2); // muzzle puff every 4th round
   }
   if (--k.charges <= 0) { k.weapon = null; k.charges = 0; }
-  k.fireCd = now + (w === 'machinegun' ? 90 : w === 'bullets' ? 170 : 320);
+  k.fireCd = now + ((d && d.cd) || 320);
 }
 let FF = false; // fast-forwarding a late-arriving shot: no kills, no effects
 // launchY: height of the firing kart (network entries carry it as the 7th element; older ones mean 0).
-// Straight shots fly level at launchY + WORLD.SHOT_FLY_Y, lobs arc under gravity, mines sit on the ground.
+// Straight shots fly level at launchY + WORLD.SHOT_FLY_Y, arcs leave at launchY + 1.5 with DEF.vy upward, mines
+// sit on the ground and fake boxes float like real ones. A remote shot arrives `age` ms old and is caught up.
 function spawnShot(owner, type, x, z, yaw, age, key, launchY = 0) {
   if (projById.has(key) || projById.has(key + '.0')) return;
-  const offs = type === 'g' ? [-0.07, 0, 0.07] : [0];
+  const d = DEF[type]; if (!d) return;
+  const offs = d.spread || [0];
   launchY = +launchY || 0;
   offs.forEach((off, i) => {
-    const id = type === 'g' ? key + '.' + i : key, a = yaw + off, d = DEF[type];
-    const p = { id, key, owner, type, x, z, y: launchY + WORLD.SHOT_FLY_Y, vx: 0, vz: 0, vy: 0, simT: 0, life: d.life, dead: false, landed: false, landedAt: 0 };
+    const id = d.spread ? key + '.' + i : key, a = yaw + off;
+    const p = { id, key, owner, type, x, z, y: launchY + WORLD.SHOT_FLY_Y, vx: 0, vz: 0, vy: 0, simT: 0, life: d.life, dead: false, landed: false, landedAt: 0, bounces: 0, gy: groundY(x, z) };
     if (d.spd) { p.vx = Math.sin(a) * d.spd; p.vz = Math.cos(a) * d.spd; }
-    if (type === 'l') { p.vx = Math.sin(a) * 20; p.vz = Math.cos(a) * 20; p.vy = 12; p.y = launchY + 1.5; }
-    if (type === 'm') p.y = groundY(x, z) + 0.2;
+    if (d.vy) { p.vy = d.vy; p.y = launchY + 1.5; }
+    if (type === 'm') p.y = p.gy + 0.2;
+    if (type === 'x') p.y = p.gy + 1.6;
     p.mesh = makeShotMesh(type, a); p.mesh.position.set(p.x, p.y, p.z); scene.add(p.mesh);
     projs.push(p); projById.set(id, p);
     if (age > 0) {
       // catch up a shot that arrived late; it can still hit karts this page controls on the way
-      const locals = DIRECT[type] ? allKarts(Date.now()).filter(k => k.local) : null;
+      const karts = allKarts(Date.now()), locals = d.hit ? karts.filter(k => k.local) : null;
       for (let t = 0; t < age && !p.dead; t += 16) {
-        FF = true; moveShot(p, 0.016); FF = false;
+        FF = true; moveShot(p, 0.016, karts); FF = false;
         if (locals && !p.dead) directHit(p, locals, Date.now());
       }
     }
   });
 }
 function killShot(p) { if (p.dead) return; p.dead = true; scene.remove(p.mesh); }
-function moveShot(p, dt) {
+// Floor level for a shot's explosion effects: the ground under it when it is near that ground, else just below the
+// shot (a rocket bursting against a plateau side, or a nuke over a pit, should not draw its boom on the far level).
+const fxFloor = p => { const g = groundY(p.x, p.z); return p.y - g >= -0.3 && p.y - g <= 1.6 ? g : p.y - 1; };
+// One step of a shot's flight. karts (allKarts) is only read by the homing machine gun round.
+function moveShot(p, dt, karts) {
   p.simT += dt * 1000;
-  if (p.type === 'm') return;
-  if (p.type === 'l') {
+  const d = DEF[p.type];
+  if (!d.spd) return; // mines and fake boxes stay put
+  if (d.vy) { // arcing shot
     if (p.landed) return;
-    p.vy -= WORLD.GRAVITY * dt; p.x += p.vx * dt; p.z += p.vz * dt; p.y += p.vy * dt;
-    // walls, obstacles and plateau sides above the lob's height bounce it back
-    if (solidAt(p.x, p.z, 0.6, p.y)) { p.x -= p.vx * dt; p.z -= p.vz * dt; p.vx *= -0.4; p.vz *= -0.4; }
-    const rest = groundY(p.x, p.z) + 0.7;
-    if (p.y <= rest) { p.y = rest; p.landed = true; p.landedAt = p.simT; }
+    const g = arcStep(p, dt, p.type === 'c' ? d.bounce : 0.4);
+    if (g === null) return;
+    if (p.type === 'c' || p.bounces >= 1) { p.y = g + 0.7; p.landed = true; p.landedAt = p.simT; if (p.type === 'c') explode(p); }
+    else { p.y = g + 0.6; p.vy = -p.vy * d.bounce; p.vx *= 0.6; p.vz *= 0.6; p.bounces++; } // grenuke: first landing bounces
     return;
   }
+  if (d.home && karts) { // machine gun: turn toward the nearest alive non-owner kart in range and in the cone
+    const sp = Math.hypot(p.vx, p.vz), ang = Math.atan2(p.vx, p.vz); let best = null, bd = d.home.range;
+    for (const k of karts) {
+      if (!k.alive || k.key === p.owner || !levelWith(k.y, p.y)) continue;
+      const dist = Math.hypot(k.x - p.x, k.z - p.z); if (dist >= bd || Math.abs(wrap(Math.atan2(k.x - p.x, k.z - p.z) - ang)) > d.home.cone) continue;
+      bd = dist; best = k;
+    }
+    if (best) { const turn = clamp(wrap(Math.atan2(best.x - p.x, best.z - p.z) - ang), -d.home.turn * dt, d.home.turn * dt), na = ang + turn; p.vx = Math.sin(na) * sp; p.vz = Math.cos(na) * sp; p.mesh.rotation.y = na; }
+  }
   p.x += p.vx * dt; p.z += p.vz * dt;
-  // straight shots fly level: a wall, an obstacle or ground higher than the shot stops them
-  if (solidAt(p.x, p.z, 0.3, p.y)) { if (p.type === 'r' || p.type === 'n') explode(p); else { if (!FF) puffFx(p.x, p.z, p.type === 'f' ? '#BFEFFF' : '#FFE16B', 0.8); killShot(p); } }
+  // straight shots fly level: a wall, an obstacle taller than the shot's height or ground higher than it stops them
+  if (blockedAt(p.x, p.z, 0.3, p.y)) { if (d.blast) explode(p); else { if (!FF) puffFx(p.x, p.z, p.type === 'f' ? '#BFEFFF' : p.type === 'h' ? '#D8FF5A' : '#FFE16B', 0.8, p.y - 1.2); killShot(p); } }
 }
-function explode(p) {
+// Apply `amount` of shot p's damage to kart entry k (from allKarts). Only karts this page controls take damage
+// here (each browser is the authority for its own kart); for another player's kart the same geometry runs on
+// their page, so we only predict the hit. Returns the damage dealt locally; a landing shot of yours blinks the
+// HUD hit marker and ticks.
+function hitKart(p, k, amount, now) {
+  const dealt = k.local ? damage(k.ref, amount, p.owner, now) : (amount > 0 && k.alive && !k.protect && !k.star ? amount : 0);
+  if (dealt > 0 && me && p.owner === me.key && k.ref !== me) { onHitMarker(); sfx('hit'); }
+  return k.local ? dealt : 0;
+}
+// Blow up shot p: boom, then splash damage (DEF.splash, see splashDmg) on every local kart within blast + KART_R
+// and within DEF.vert (3.5) of the shot's height; `direct`, the kart it struck, takes the full DEF.dmg instead.
+// A fake box "explodes" by fizzing out (no damage here: its trap damage is applied where it is triggered).
+function explode(p, direct) {
   if (p.dead) return;
   killShot(p);
   if (FF) return;
-  const R = DEF[p.type].blast || 4, now = Date.now();
-  boomFx(p.x, p.z, R, p.type === 'n' ? '#FFD23F' : '#FF9A3C');
+  const d = DEF[p.type], now = Date.now(), floor = fxFloor(p);
+  if (p.type === 'x') { puffFx(p.x, p.z, '#B46BFF', 2.4, floor); sfx('fizz', p); return; }
+  const R = d.blast || 4;
+  boomFx(p.x, p.z, R, p.type === 'n' ? '#FFD23F' : '#FF9A3C', floor);
   sfx(p.type === 'n' ? 'big' : 'boom', p);
-  for (const k of localKarts()) {
-    if (k.key === p.owner || !vulnerable(k, now)) continue;
-    if (Math.abs((k.y || 0) - p.y) >= 3.5) continue; // blast doesn't reach a plateau above it or a pit below
-    if (Math.hypot(k.x - p.x, k.z - p.z) < R + KART_R) kill(k, p.owner);
+  for (const k of allKarts(now)) {
+    if (k.key === p.owner || !k.alive) continue;
+    if (Math.abs((k.y || 0) - p.y) >= (d.vert || 3.5)) continue; // blast doesn't reach a plateau above it or a pit below
+    const dist = Math.hypot(k.x - p.x, k.z - p.z);
+    if (dist < R + KART_R) hitKart(p, k, k.ref === direct ? d.dmg : splashDmg(p.type, dist), now);
   }
 }
 // Does a shot at height py touch a kart at height ky? Karts are ~2 units tall.
 const levelWith = (ky, py) => Math.abs((ky || 0) - py) < 2.2;
+// A straight or arcing shot meeting a kart (DEF.hit + KART_R, same level): explosives go off on it, the rest hit it
+// for DEF.dmg and vanish. Snowballs also freeze a kart they damaged.
 function directHit(p, karts, now) {
-  const h = DEF[p.type].hit + KART_R;
+  const d = DEF[p.type], h = d.hit + KART_R;
   for (const k of karts) {
     if (!k.alive || k.key === p.owner || !levelWith(k.y, p.y)) continue;
     if ((k.x - p.x) ** 2 + (k.z - p.z) ** 2 > h * h) continue;
-    if (p.type === 'r' || p.type === 'n') explode(p);
-    else if (p.type === 'g') { puffFx(p.x, p.z, '#FFE16B', 0.9); killShot(p); if (k.local && vulnerable(k.ref, now)) kill(k.ref, p.owner); }
-    else if (p.type === 'f') {
-      puffFx(p.x, p.z, '#BFEFFF', 2); killShot(p);
-      if (k.local && now >= k.ref.starUntil && now >= k.ref.protectUntil) { k.ref.frozenUntil = now + 3000; sfx('freeze', k.ref); }
+    if (d.blast) explode(p, k.ref);
+    else {
+      puffFx(p.x, p.z, p.type === 'f' ? '#BFEFFF' : p.type === 'h' ? '#D8FF5A' : '#FFE16B', p.type === 'f' ? 2 : 0.9, p.y - 1.2); killShot(p);
+      const dealt = hitKart(p, k, d.dmg, now);
+      if (d.freeze && dealt > 0 && k.ref.alive) { k.ref.frozenUntil = Math.max(k.ref.frozenUntil, now + d.freeze); sfx('freeze', k.ref); }
     }
     return;
   }
 }
+// A local kart set off a placed or resting shot (mine, grenuke, fake box): the local player's triggers also go out
+// in the presence payload (tg) so the owner's page removes it too.
 function trigger(p, k) { explode(p); if (k === me) myTg.push({ k: p.key, t: Date.now() }); }
+// Fake box: a non-owner kart driving through it (normal pickup radius, same level) takes DEF.x.dmg, loses its
+// weapon and gets a purple fizz. The owner drives through it freely.
+function springFakeBox(p, k, now) {
+  if (hitKart(p, k, DEF.x.dmg, now) > 0 && k.ref.alive) { k.ref.weapon = null; k.ref.charges = 0; }
+  puffFx(k.x, k.z, '#B46BFF', 2, k.y);
+  trigger(p, k.ref);
+}
 function updateShots(dt, karts, now) {
   for (const p of projs) {
     if (p.dead) continue;
-    if (p.simT > p.life) { if (p.type === 'r' || p.type === 'n' || p.type === 'l') explode(p); else killShot(p); continue; }
-    moveShot(p, dt);
+    const d = DEF[p.type];
+    if (p.simT > p.life) { if (d.blast) explode(p); else killShot(p); continue; }
+    moveShot(p, dt, karts);
     if (p.dead) continue;
-    if (DIRECT[p.type]) directHit(p, karts, now);
-    else if (p.type === 'l' && p.landed) {
-      if (p.simT - p.landedAt > 2200) { explode(p); continue; }
-      for (const k of localKarts()) if (k.alive && k.key !== p.owner && levelWith(k.y, p.y) && Math.hypot(k.x - p.x, k.z - p.z) < 4.2) { trigger(p, k); break; }
-    } else if (p.type === 'm' && p.simT > 600) {
-      for (const k of localKarts()) if (k.alive && k.key !== p.owner && levelWith(k.y, p.y) && Math.hypot(k.x - p.x, k.z - p.z) < 2.4) { trigger(p, k); break; }
+    if (d.hit && !p.landed) directHit(p, karts, now);
+    if (p.dead) continue;
+    if (p.type === 'l' && p.bounces >= 1) { // after its bounce the grenuke is live: a kart coming close sets it off, else the fuse does
+      if (p.landed && p.simT - p.landedAt > d.fuse) { explode(p); continue; }
+      for (const k of localKarts()) if (k.alive && k.key !== p.owner && levelWith(k.y, p.y) && Math.hypot(k.x - p.x, k.z - p.z) < d.prox) { trigger(p, k); break; }
+    } else if (p.type === 'm' && p.simT > d.arm) {
+      for (const k of localKarts()) if (k.alive && k.key !== p.owner && levelWith(k.y, p.y) && Math.hypot(k.x - p.x, k.z - p.z) < d.prox) { trigger(p, k); break; }
+    } else if (p.type === 'x') {
+      for (const k of karts) if (k.local && k.alive && k.key !== p.owner && Math.abs((k.y || 0) - p.gy) < 2.2 && Math.hypot(k.x - p.x, k.z - p.z) < d.prox) { springFakeBox(p, k, now); break; }
     }
     if (p.dead) continue;
     p.mesh.position.set(p.x, p.y, p.z);
     if (p.type === 'f') p.mesh.rotation.x += dt * 10;
-    if (p.type === 'm' && p.mesh.userData.light) p.mesh.userData.light.visible = Math.floor(p.simT / 400) % 2 === 0;
+    else if (p.type === 'c' || p.type === 'l') { p.mesh.rotation.x += dt * 6; p.mesh.rotation.z += dt * 2; }
+    if (p.mesh.userData.light) p.mesh.userData.light.visible = Math.floor(p.simT / (p.type === 'l' && p.bounces ? 120 : 400)) % 2 === 0;
+    if (p.type === 'x') { const t = p.simT / 1000; p.mesh.rotation.y = t * 1.4; p.mesh.userData.box.position.y = Math.sin(t * 2.5) * 0.25; } // bobs and spins like a real box
   }
   for (let i = projs.length - 1; i >= 0; i--) if (projs[i].dead) { projById.delete(projs[i].id); projs.splice(i, 1); }
 }
@@ -2475,18 +2578,20 @@ function kill(V, killerKey) {
   V.alive = false; V.deadAt = now; V.d++; V.lk = killerKey || '';
   if (killerKey && killerKey !== V.key) V.kb[killerKey] = (V.kb[killerKey] || 0) + 1;
   V.weapon = null; V.charges = 0; V.spikeUntil = V.starUntil = V.frozenUntil = 0;
-  boomFx(V.x, V.z, 3.5, '#FF6B3D'); sfx('boom', V);
+  boomFx(V.x, V.z, 3.5, '#FF6B3D', V.y || 0); sfx('boom', V);
   pushFeed(nameOf(killerKey), V === me ? 'you' : V.name, killerKey === (me && me.key) || V === me);
   if (me && killerKey === me.key && V !== me) { toast('You smashed ' + V.name); sfx('score'); }
 }
 // Take `amount` off V's health; smash it when health runs out. Only local karts (ours and the bots)
-// take damage here: every browser is the authority for its own kart, as with kills.
+// take damage here: every browser is the authority for its own kart, as with kills. Returns the damage
+// actually dealt (0 while V is protected, starred or dead).
 function damage(V, amount, attackerKey, now) {
-  if (!vulnerable(V, now) || amount <= 0) return false;
+  if (!vulnerable(V, now) || !(amount > 0)) return 0;
   if (now < V.spikeUntil) amount *= 0.9; // Spiky-Go-Round: 10% damage reduction
+  const dealt = Math.min(amount, V.hp);
   V.hp = Math.max(0, V.hp - amount);
-  if (V.hp <= 0) { kill(V, attackerKey); return true; }
-  return false;
+  if (V.hp <= 0) kill(V, attackerKey);
+  return dealt;
 }
 function contactKills(karts, now) {
   for (const V of localKarts()) {
@@ -2554,6 +2659,7 @@ function botThink(b, dt, now, karts) {
   else if (!b.weapon) {
     let best = null, bd = 1e9;
     for (const bx of boxes) { if (now < bx.availableAt) continue; const d = Math.hypot(bx.x - b.x, bx.z - b.z); if (d < bd) { bd = d; best = bx; } }
+    for (const p of projs) { if (p.type !== 'x' || p.dead || p.owner === b.key) continue; const d = Math.hypot(p.x - b.x, p.z - b.z); if (d < bd) { bd = d; best = p; } } // fake boxes fool bots too
     if (best) { tx = best.x; tz = best.z; } else if (E) { tx = E.x; tz = E.z; }
   } else if (b.weapon === 'mines' || b.weapon === 'fakebox') {
     if (!ai.wp || Math.hypot(ai.wp[0] - b.x, ai.wp[1] - b.z) < 6) ai.wp = BOX_SPOTS[Math.floor(Math.random() * BOX_SPOTS.length)];
@@ -2585,14 +2691,18 @@ function botThink(b, dt, now, karts) {
   if (Math.hypot(b.vx, b.vz) < 2.5) ai.stuck = (ai.stuck || 0) + dt; else ai.stuck = 0;
   if (ai.stuck > 0.9) { ai.rev = now + 700; ai.stuck = 0; ai.revSteer = Math.random() < .5 ? -1 : 1; }
   if (now < (ai.rev || 0)) { thr = -1; steer = ai.revSteer; }
+  // firing: straight shots when roughly aimed at the enemy's lead position, in range and on the same level; arcing
+  // shots (cannon, grenuke) at mid range even over cover; mines and fake boxes when being followed, or now and then;
+  // spiky and star when an enemy is close. The machine gun is held: fire every step its 90 ms cooldown allows.
   let fire = false;
   if (b.weapon && E && now > ai.nextFire) {
-    const w = b.weapon, ad = Math.abs(wrap(want - b.yaw));
-    if ((w === 'rockets' || w === 'bullets' || w === 'machinegun' || w === 'snowballs' || w === 'nuke') && ad < 0.13 && dE < 42) fire = true;
-    else if ((w === 'grenuke' || w === 'cannon') && ad < 0.3 && dE > 8 && dE < 22) fire = true;
-    else if (w === 'mines' || w === 'fakebox') { const back = Math.abs(wrap(Math.atan2(E.x - b.x, E.z - b.z) - b.yaw)) > 2.4; if ((back && dE < 18) || Math.random() < dt * 0.25) fire = true; }
-    else if ((w === 'spiky' || w === 'star') && dE < 20) fire = true;
-    if (fire) ai.nextFire = now + rand(250, 800);
+    const w = b.weapon, type = SHOT_OF[w], d = type && DEF[type];
+    const ad = Math.abs(wrap(Math.atan2(E.x + E.vx * dE / 70 - b.x, E.z + E.vz * dE / 70 - b.z) - b.yaw)), dy = Math.abs((E.y || 0) - (b.y || 0));
+    if (d && d.spd && !d.vy && ad < 0.13 && dE < 42 && dy <= 3) fire = true;
+    else if (d && d.vy && ad < 0.35 && dE > 10 && dE < 30) fire = true;
+    else if (d && d.drop) { const back = Math.abs(wrap(Math.atan2(E.x - b.x, E.z - b.z) - b.yaw)) > 2.4; if ((back && dE < 18) || Math.random() < dt * 0.25) fire = true; }
+    else if (STATE_OF[w] && dE < 20) fire = true;
+    if (fire) ai.nextFire = now + (d && d.hold ? d.cd : rand(250, 800));
   }
   return { thr, steer, fire };
 }
@@ -2633,7 +2743,7 @@ function syncRemotes(dt, now) {
       }
       R.lastD = p.d | 0; R.lastRd = curRd;
     }
-    if (R.lastAlive && !p.a) { boomFx(R.dx, R.dz, 3.5, '#FF6B3D'); sfx('boom', { x: R.dx, z: R.dz }); }
+    if (R.lastAlive && !p.a) { boomFx(R.dx, R.dz, 3.5, '#FF6B3D', R.dy); sfx('boom', { x: R.dx, z: R.dz }); }
     if (!R.lastAlive && p.a) { R.dx = +p.x || 0; R.dz = +p.z || 0; R.dy = +p.h || 0; R.dyaw = +p.y || 0; }
     R.lastAlive = !!p.a;
     // shots this player fired
@@ -3031,15 +3141,15 @@ function update(dt) {
   // kart physics runs at a fixed rate; A blends the last two physics states for drawing
   physics.advance(dt);
   const A = physics.alpha;
-  if (started && playing && (firePressed || (fireHeld && me.weapon === 'machinegun'))) fire(me, now);
+  if (started && playing && (firePressed || (fireHeld && me.weapon && DEF[SHOT_OF[me.weapon]] && DEF[SHOT_OF[me.weapon]].hold))) fire(me, now);
   firePressed = false;
   const karts = allKarts(now);
-  // boxes
+  // boxes (a kart must be on the box's level: not under a plateau's box or above a bowl's)
   for (const k of localKarts()) {
     if (!k.alive || k.weapon || !playing) continue;
     for (const b of boxes) {
-      if (now < b.availableAt || Math.hypot(k.x - b.x, k.z - b.z) > 2.7) continue;
-      b.availableAt = now + BOX_RESPAWN; giveWeapon(k); puffFx(b.x, b.z, '#B79BFF', 2);
+      if (now < b.availableAt || Math.abs((k.y || 0) - b.gy) > 2.2 || Math.hypot(k.x - b.x, k.z - b.z) > 2.7) continue;
+      b.availableAt = now + BOX_RESPAWN; giveWeapon(k); puffFx(b.x, b.z, '#B79BFF', 2, b.gy);
       if (k === me) myBx.push({ i: b.i, t: now });
       break;
     }
@@ -3054,13 +3164,13 @@ function update(dt) {
     const P = renderPose(k, A), body = P.yaw + P.lean;
     styleKart(k.view, { x: P.x, y: P.y, z: P.z, yaw: body, alive: k.alive, spikes: now < k.spikeUntil, star: now < k.starUntil, frozen: now < k.frozenUntil, protect: now < k.protectUntil, sp: k.sp }, tSec);
     setHealth(k.view, k.hp / WORLD.HP_MAX);
-    driftFx(k.view, k.alive && k.drift !== 0, P.x, P.z, body, dt);
+    driftFx(k.view, k.alive && k.drift !== 0, P.x, P.y, P.z, body, dt);
   }
   for (const R of remotes.values()) {
     const fx = String(R.p.fx || ''), body = R.dyaw + (R.lean || 0);
     styleKart(R.view, { x: R.dx, y: R.dy, z: R.dz, yaw: body, alive: !!R.p.a, spikes: fx.includes('k'), star: fx.includes('s'), frozen: fx.includes('f'), protect: fx.includes('u'), sp: Math.hypot(+R.p.vx || 0, +R.p.vz || 0) }, tSec);
     setHealth(R.view, (R.p.hp == null ? WORLD.HP_MAX : +R.p.hp || 0) / WORLD.HP_MAX);
-    driftFx(R.view, !!R.p.a && !!R.drift, R.dx, R.dz, body, dt);
+    driftFx(R.view, !!R.p.a && !!R.drift, R.dx, R.dy, R.dz, body, dt);
   }
   // damage feedback: your health dropped since the last frame (a respawn only raises it, so no reset is needed)
   if (started) { if (me.hp < hudLastHp) triggerHit(); hudLastHp = me.hp; }
@@ -3089,8 +3199,8 @@ function frame(t) {
 // Test/debug handle, only with ?debug in the URL (module scope hides everything else).
 if (/[?&]debug(?:[=&]|$)/.test(location.search)) {
   window.SK = {
-    THREE, scene, camera, renderer, DRIVE, WORLD, TERRAIN, WEAPONS, DEF, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence, damage, groundY, rampTo, solidAt,
-    get me() { return me; }, get bots() { return bots; }, get remotes() { return remotes; }, get Net() { return Net; },
+    THREE, scene, camera, renderer, DRIVE, WORLD, TERRAIN, WEAPONS, DEF, SHOT_OF, STATE_OF, QUALITY, setQuality, update, renderFrame, standings, respawn, resetDrive, buildPresence, damage, splashDmg, arcStep, fire, clearShots, groundY, rampTo, solidAt,
+    get me() { return me; }, get bots() { return bots; }, get remotes() { return remotes; }, get Net() { return Net; }, get projs() { return projs; },
     get started() { return started; }, get curRd() { return curRd; }, get fxList() { return fxList; }, get boxes() { return boxes; },
     get physics() { return physics; }, get skidNext() { return skidNext; },
   };
